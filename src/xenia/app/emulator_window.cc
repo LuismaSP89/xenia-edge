@@ -2102,7 +2102,9 @@ void EmulatorWindow::LaunchTitleInNewProcess(
 
   // Pass the config file path if one is being used
   if (!cvars::config.empty()) {
-    cmd_line << L" --config=\"" << xe::to_utf16(cvars::config) << L"\"";
+    auto config_u16 = xe::to_utf16(cvars::config);
+    std::wstring config_wstr(config_u16.begin(), config_u16.end());
+    cmd_line << L" --config=\"" << config_wstr << L"\"";
   }
 
   // Add the target game file
