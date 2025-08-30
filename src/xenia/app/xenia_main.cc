@@ -510,9 +510,12 @@ bool EmulatorApp::OnInitialize() {
   // Determine window size based on user setting.
   auto res = xe::gpu::GraphicsSystem::GetInternalDisplayResolution();
 
+  // Check if this is a game process (has target) or UI process
+  bool is_game_process = !cvars::target.empty();
+
   // Main emulator display window.
-  emulator_window_ = EmulatorWindow::Create(emulator_.get(), app_context(),
-                                            res.first, res.second);
+  emulator_window_ = EmulatorWindow::Create(
+      emulator_.get(), app_context(), res.first, res.second, is_game_process);
   if (!emulator_window_) {
     XELOGE("Failed to create the main emulator window");
     return false;

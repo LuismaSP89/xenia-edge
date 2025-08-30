@@ -54,7 +54,7 @@ class EmulatorWindow {
 
   static std::unique_ptr<EmulatorWindow> Create(
       Emulator* emulator, ui::WindowedAppContext& app_context, uint32_t width,
-      uint32_t height);
+      uint32_t height, bool is_game_process = false);
 
   std::unique_ptr<xe::threading::Thread> Gamepad_HotKeys_Listener;
 
@@ -81,6 +81,7 @@ class EmulatorWindow {
 
   void OnEmulatorInitialized();
 
+  void LaunchTitleInNewProcess(const std::filesystem::path& path_to_file);
   xe::X_STATUS RunTitle(const std::filesystem::path& path_to_file);
   void UpdateTitle();
   void SetFullscreen(bool fullscreen);
@@ -210,7 +211,7 @@ class EmulatorWindow {
 
   explicit EmulatorWindow(Emulator* emulator,
                           ui::WindowedAppContext& app_context, uint32_t width,
-                          uint32_t height);
+                          uint32_t height, bool is_game_process = false);
 
   bool Initialize();
 
@@ -274,7 +275,15 @@ class EmulatorWindow {
 
   Emulator* emulator_;
   ui::WindowedAppContext& app_context_;
+  bool is_game_process_;
   EmulatorWindowListener window_listener_;
+
+#if !XE_PLATFORM_WIN32
+  std::vector<pid_t> child_processes_;  // Track child process PIDs on Linux
+#else
+  std::vector<HANDLE>
+      child_processes_;  // Track child process handles on Windows
+#endif
   std::unique_ptr<ui::Window> window_;
   std::unique_ptr<ui::ImGuiDrawer> imgui_drawer_;
   std::unique_ptr<DisplayConfigGameConfigLoadCallback>

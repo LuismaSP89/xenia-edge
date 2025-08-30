@@ -9,6 +9,8 @@
 
 #include "xenia/app/emulator_window.h"
 
+#include <cstdlib>
+#include <sstream>
 #include "third_party/imgui/imgui.h"
 #include "third_party/stb/stb_image_write.h"
 #include "third_party/tomlplusplus/toml.hpp"
@@ -16,11 +18,23 @@
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/debugging.h"
+#include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
 #include "xenia/base/profiling.h"
 #include "xenia/base/system.h"
 #include "xenia/base/threading.h"
+#include "xenia/config.h"
+
+#if XE_PLATFORM_WIN32
+#include <windows.h>
+#else
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 #include "xenia/cpu/processor.h"
 #include "xenia/emulator.h"
 #include "xenia/gpu/command_processor.h"
@@ -47,6 +61,7 @@ DECLARE_bool(debug);
 DECLARE_string(hid);
 
 DECLARE_bool(guide_button);
+DECLARE_string(config);
 
 DECLARE_bool(clear_memory_page_state);
 
@@ -165,9 +180,11 @@ constexpr std::string_view kBaseTitle = "Xenia-canary";
 
 EmulatorWindow::EmulatorWindow(Emulator* emulator,
                                ui::WindowedAppContext& app_context,
-                               uint32_t width, uint32_t height)
+                               uint32_t width, uint32_t height,
+                               bool is_game_process)
     : emulator_(emulator),
       app_context_(app_context),
+      is_game_process_(is_game_process),
       window_listener_(*this),
       window_(ui::Window::Create(app_context, kBaseTitle, width, height)),
       imgui_drawer_(
@@ -195,10 +212,10 @@ EmulatorWindow::EmulatorWindow(Emulator* emulator,
 
 std::unique_ptr<EmulatorWindow> EmulatorWindow::Create(
     Emulator* emulator, ui::WindowedAppContext& app_context, uint32_t width,
-    uint32_t height) {
+    uint32_t height, bool is_game_process) {
   assert_true(app_context.IsInUIThread());
-  std::unique_ptr<EmulatorWindow> emulator_window(
-      new EmulatorWindow(emulator, app_context, width, height));
+  std::unique_ptr<EmulatorWindow> emulator_window(new EmulatorWindow(
+      emulator, app_context, width, height, is_game_process));
   if (!emulator_window->Initialize()) {
     return nullptr;
   }
@@ -206,6 +223,41 @@ std::unique_ptr<EmulatorWindow> EmulatorWindow::Create(
 }
 
 EmulatorWindow::~EmulatorWindow() {
+  XELOGI("EmulatorWindow destructor called, killing {} child processes",
+         child_processes_.size());
+
+  // Kill all child processes when the parent window is destroyed
+#if XE_PLATFORM_WIN32
+  for (HANDLE process : child_processes_) {
+    DWORD exit_code;
+    // Check if process is still running
+    if (GetExitCodeProcess(process, &exit_code) && exit_code == STILL_ACTIVE) {
+      // Terminate the process
+      TerminateProcess(process, 0);
+      // Wait briefly for it to exit
+      WaitForSingleObject(process, 1000);
+    }
+    // Close the handle regardless
+    CloseHandle(process);
+  }
+#else
+  for (pid_t pid : child_processes_) {
+    // Check if process still exists before trying to kill it
+    if (kill(pid, 0) == 0) {
+      // Process exists, send SIGTERM to gracefully terminate
+      kill(pid, SIGTERM);
+      // Give it a moment to exit gracefully
+      usleep(100000);  // 100ms
+      // If still running, force kill
+      kill(pid, SIGKILL);
+    }
+    // Try to reap it if it's a zombie
+    int status;
+    waitpid(pid, &status, WNOHANG);
+  }
+#endif
+  child_processes_.clear();
+
   // Notify the ImGui drawer that the immediate drawer is being destroyed.
   ShutdownGraphicsSystemPresenterPainting();
 }
@@ -281,6 +333,34 @@ void EmulatorWindow::OnEmulatorInitialized() {
 }
 
 void EmulatorWindow::EmulatorWindowListener::OnClosing(ui::UIEvent& e) {
+  // Kill all child processes when the parent window is closing
+  XELOGI("Window closing, killing {} child processes",
+         emulator_window_.child_processes_.size());
+
+#if XE_PLATFORM_WIN32
+  for (HANDLE process : emulator_window_.child_processes_) {
+    DWORD exit_code;
+    if (GetExitCodeProcess(process, &exit_code)) {
+      if (exit_code == STILL_ACTIVE) {
+        XELOGI("Terminating child process");
+        TerminateProcess(process, 0);
+        // Don't wait, just close handle
+      }
+    }
+    CloseHandle(process);
+  }
+#else
+  for (pid_t pid : emulator_window_.child_processes_) {
+    // Check if process is still alive
+    if (kill(pid, 0) == 0) {
+      XELOGI("Terminating child process {}", pid);
+      // Send SIGKILL directly for immediate termination
+      kill(pid, SIGKILL);
+    }
+  }
+#endif
+
+  emulator_window_.child_processes_.clear();
   emulator_window_.app_context_.QuitFromUIThread();
 }
 
@@ -656,164 +736,168 @@ bool EmulatorWindow::Initialize() {
   window_->AddListener(&window_listener_);
   window_->AddInputListener(&window_listener_, kZOrderEmulatorWindowInput);
 
-  // Main menu.
-  // FIXME: This code is really messy.
-  auto main_menu = MenuItem::Create(MenuItem::Type::kNormal);
-  auto file_menu = MenuItem::Create(MenuItem::Type::kPopup, "&File");
-  auto recent_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Open Recent");
-  auto zar_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Zar Package");
-  FillRecentlyLaunchedTitlesMenu(recent_menu.get());
-  {
-    file_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "&Open...", "Ctrl+O",
-                         std::bind(&EmulatorWindow::FileOpen, this)));
-    file_menu->AddChild(std::move(recent_menu));
-    file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-    file_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "Install Content...",
-                         std::bind(&EmulatorWindow::InstallContent, this)));
-    zar_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "Create",
-                         std::bind(&EmulatorWindow::CreateZarchive, this)));
-    zar_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "Extract",
-                         std::bind(&EmulatorWindow::ExtractZarchive, this)));
-    file_menu->AddChild(std::move(zar_menu));
+  // Main menu - only create for UI process, not game process
+  if (!is_game_process_) {
+    // UI process - create the menu bar
+    // FIXME: This code is really messy.
+    auto main_menu = MenuItem::Create(MenuItem::Type::kNormal);
+    auto file_menu = MenuItem::Create(MenuItem::Type::kPopup, "&File");
+    auto recent_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Open Recent");
+    auto zar_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Zar Package");
+    FillRecentlyLaunchedTitlesMenu(recent_menu.get());
+    {
+      file_menu->AddChild(
+          MenuItem::Create(MenuItem::Type::kString, "&Open...", "Ctrl+O",
+                           std::bind(&EmulatorWindow::FileOpen, this)));
+      file_menu->AddChild(std::move(recent_menu));
+      file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+      file_menu->AddChild(
+          MenuItem::Create(MenuItem::Type::kString, "Install Content...",
+                           std::bind(&EmulatorWindow::InstallContent, this)));
+      zar_menu->AddChild(
+          MenuItem::Create(MenuItem::Type::kString, "Create",
+                           std::bind(&EmulatorWindow::CreateZarchive, this)));
+      zar_menu->AddChild(
+          MenuItem::Create(MenuItem::Type::kString, "Extract",
+                           std::bind(&EmulatorWindow::ExtractZarchive, this)));
+      file_menu->AddChild(std::move(zar_menu));
 #ifdef DEBUG
-    file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-    file_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "Close",
-                         std::bind(&EmulatorWindow::FileClose, this)));
+      file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+      file_menu->AddChild(
+          MenuItem::Create(MenuItem::Type::kString, "Close",
+                           std::bind(&EmulatorWindow::FileClose, this)));
 #endif  // #ifdef DEBUG
-    file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-    file_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "Show content directory...",
-        std::bind(&EmulatorWindow::ShowContentDirectory, this)));
-    file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-    file_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "E&xit", "Alt+F4",
-                         [this]() { window_->RequestClose(); }));
-  }
-  main_menu->AddChild(std::move(file_menu));
+      file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+      file_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "Show content directory...",
+          std::bind(&EmulatorWindow::ShowContentDirectory, this)));
+      file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+      file_menu->AddChild(
+          MenuItem::Create(MenuItem::Type::kString, "E&xit", "Alt+F4",
+                           [this]() { window_->RequestClose(); }));
+    }
+    main_menu->AddChild(std::move(file_menu));
 
-  // Profile Menu
-  auto profile_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Profile");
-  {
-    profile_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&Show Profile Menu", "",
-        std::bind(&EmulatorWindow::ToggleProfilesConfigDialog, this)));
-  }
-  main_menu->AddChild(std::move(profile_menu));
+    // Profile Menu
+    auto profile_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Profile");
+    {
+      profile_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "&Show Profile Menu", "",
+          std::bind(&EmulatorWindow::ToggleProfilesConfigDialog, this)));
+    }
+    main_menu->AddChild(std::move(profile_menu));
 
-  // CPU menu.
-  auto cpu_menu = MenuItem::Create(MenuItem::Type::kPopup, "&CPU");
-  {
-    cpu_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&Reset Time Scalar", "Numpad *",
-        std::bind(&EmulatorWindow::CpuTimeScalarReset, this)));
-    cpu_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "Time Scalar /= 2", "Numpad -",
-        std::bind(&EmulatorWindow::CpuTimeScalarSetHalf, this)));
-    cpu_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "Time Scalar *= 2", "Numpad +",
-        std::bind(&EmulatorWindow::CpuTimeScalarSetDouble, this)));
-  }
-  cpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-  {
-    cpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kString,
-                                        "Toggle Profiler &Display", "F3",
-                                        []() { Profiler::ToggleDisplay(); }));
-    cpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kString,
-                                        "&Pause/Resume Profiler", "`",
-                                        []() { Profiler::TogglePause(); }));
-  }
-  cpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-  {
-    cpu_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&Break and Show Guest Debugger",
-        "Pause/Break", std::bind(&EmulatorWindow::CpuBreakIntoDebugger, this)));
-    cpu_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&Break into Host Debugger",
-        "Ctrl+Pause/Break",
-        std::bind(&EmulatorWindow::CpuBreakIntoHostDebugger, this)));
-  }
-  main_menu->AddChild(std::move(cpu_menu));
+    // CPU menu.
+    auto cpu_menu = MenuItem::Create(MenuItem::Type::kPopup, "&CPU");
+    {
+      cpu_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "&Reset Time Scalar", "Numpad *",
+          std::bind(&EmulatorWindow::CpuTimeScalarReset, this)));
+      cpu_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "Time Scalar /= 2", "Numpad -",
+          std::bind(&EmulatorWindow::CpuTimeScalarSetHalf, this)));
+      cpu_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "Time Scalar *= 2", "Numpad +",
+          std::bind(&EmulatorWindow::CpuTimeScalarSetDouble, this)));
+    }
+    cpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+    {
+      cpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kString,
+                                          "Toggle Profiler &Display", "F3",
+                                          []() { Profiler::ToggleDisplay(); }));
+      cpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kString,
+                                          "&Pause/Resume Profiler", "`",
+                                          []() { Profiler::TogglePause(); }));
+    }
+    cpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+    {
+      cpu_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "&Break and Show Guest Debugger",
+          "Pause/Break",
+          std::bind(&EmulatorWindow::CpuBreakIntoDebugger, this)));
+      cpu_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "&Break into Host Debugger",
+          "Ctrl+Pause/Break",
+          std::bind(&EmulatorWindow::CpuBreakIntoHostDebugger, this)));
+    }
+    main_menu->AddChild(std::move(cpu_menu));
 
-  // GPU menu.
-  auto gpu_menu = MenuItem::Create(MenuItem::Type::kPopup, "&GPU");
-  {
-    gpu_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "&Trace Frame", "F4",
-                         std::bind(&EmulatorWindow::GpuTraceFrame, this)));
-  }
-  gpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-  {
-    gpu_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "&Clear Runtime Caches", "F5",
-                         std::bind(&EmulatorWindow::GpuClearCaches, this)));
-  }
-  main_menu->AddChild(std::move(gpu_menu));
+    // GPU menu.
+    auto gpu_menu = MenuItem::Create(MenuItem::Type::kPopup, "&GPU");
+    {
+      gpu_menu->AddChild(
+          MenuItem::Create(MenuItem::Type::kString, "&Trace Frame", "F4",
+                           std::bind(&EmulatorWindow::GpuTraceFrame, this)));
+    }
+    gpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+    {
+      gpu_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "&Clear Runtime Caches", "F5",
+          std::bind(&EmulatorWindow::GpuClearCaches, this)));
+    }
+    main_menu->AddChild(std::move(gpu_menu));
 
-  // Display menu.
-  auto display_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Display");
-  {
-    display_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&Post-processing settings", "F6",
-        std::bind(&EmulatorWindow::ToggleDisplayConfigDialog, this)));
-  }
-  display_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-  {
-    display_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "&Fullscreen", "F11",
-                         std::bind(&EmulatorWindow::ToggleFullscreen, this)));
-    display_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "&Take Screenshot", "F12",
-                         std::bind(&EmulatorWindow::TakeScreenshot, this)));
-  }
-  main_menu->AddChild(std::move(display_menu));
+    // Display menu.
+    auto display_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Display");
+    {
+      display_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "&Post-processing settings", "F6",
+          std::bind(&EmulatorWindow::ToggleDisplayConfigDialog, this)));
+    }
+    display_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+    {
+      display_menu->AddChild(
+          MenuItem::Create(MenuItem::Type::kString, "&Fullscreen", "F11",
+                           std::bind(&EmulatorWindow::ToggleFullscreen, this)));
+      display_menu->AddChild(
+          MenuItem::Create(MenuItem::Type::kString, "&Take Screenshot", "F12",
+                           std::bind(&EmulatorWindow::TakeScreenshot, this)));
+    }
+    main_menu->AddChild(std::move(display_menu));
 
-  // HID menu.
-  auto hid_menu = MenuItem::Create(MenuItem::Type::kPopup, "&HID");
-  {
-    hid_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&Toggle controller vibration", "",
-        std::bind(&EmulatorWindow::ToggleControllerVibration, this)));
-    hid_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&Display controller hotkeys", "",
-        std::bind(&EmulatorWindow::DisplayHotKeysConfig, this)));
-  }
-  main_menu->AddChild(std::move(hid_menu));
+    // HID menu.
+    auto hid_menu = MenuItem::Create(MenuItem::Type::kPopup, "&HID");
+    {
+      hid_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "&Toggle controller vibration", "",
+          std::bind(&EmulatorWindow::ToggleControllerVibration, this)));
+      hid_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "&Display controller hotkeys", "",
+          std::bind(&EmulatorWindow::DisplayHotKeysConfig, this)));
+    }
+    main_menu->AddChild(std::move(hid_menu));
 
-  // Help menu.
-  auto help_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Help");
-  {
-    help_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "FA&Q...", "F1",
-                         std::bind(&EmulatorWindow::ShowFAQ, this)));
-    help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-    help_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "Game &compatibility...",
-                         std::bind(&EmulatorWindow::ShowCompatibility, this)));
-    help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-    help_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "Build commit on GitHub...", "F2",
-        std::bind(&EmulatorWindow::ShowBuildCommit, this)));
-    help_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "Recent changes on GitHub...", []() {
-          LaunchWebBrowser(
-              "https://github.com/xenia-canary/xenia-canary/"
-              "compare/" XE_BUILD_COMMIT "..." XE_BUILD_BRANCH);
-        }));
-    help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-    help_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&About...",
-        []() { LaunchWebBrowser("https://xenia.jp/about/"); }));
-  }
-  main_menu->AddChild(std::move(help_menu));
+    // Help menu.
+    auto help_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Help");
+    {
+      help_menu->AddChild(
+          MenuItem::Create(MenuItem::Type::kString, "FA&Q...", "F1",
+                           std::bind(&EmulatorWindow::ShowFAQ, this)));
+      help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+      help_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "Game &compatibility...",
+          std::bind(&EmulatorWindow::ShowCompatibility, this)));
+      help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+      help_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "Build commit on GitHub...", "F2",
+          std::bind(&EmulatorWindow::ShowBuildCommit, this)));
+      help_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "Recent changes on GitHub...", []() {
+            LaunchWebBrowser(
+                "https://github.com/xenia-canary/xenia-canary/"
+                "compare/" XE_BUILD_COMMIT "..." XE_BUILD_BRANCH);
+          }));
+      help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+      help_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "&About...",
+          []() { LaunchWebBrowser("https://xenia.jp/about/"); }));
+    }
+    main_menu->AddChild(std::move(help_menu));
 
-  window_->SetMainMenu(std::move(main_menu));
+    window_->SetMainMenu(std::move(main_menu));
 
-  window_->SetMainMenuEnabled(false);
+    window_->SetMainMenuEnabled(false);
+  }  // End of menu creation for UI process
 
   UpdateTitle();
 
@@ -1121,7 +1205,8 @@ void EmulatorWindow::FileDrop(const std::filesystem::path& path) {
     return;
   }
 
-  RunTitle(path);
+  // Launch the title in a new process instead of loading it here
+  LaunchTitleInNewProcess(path);
 }
 
 void EmulatorWindow::FileOpen() {
@@ -1145,8 +1230,10 @@ void EmulatorWindow::FileOpen() {
     if (!selected_files.empty()) {
       path = selected_files[0];
     }
-    // Only run the title if a file is selected
-    RunTitle(path);
+    // Launch the title in a new process instead of loading it here
+    if (!path.empty()) {
+      LaunchTitleInNewProcess(path);
+    }
   }
 }
 
@@ -1728,7 +1815,7 @@ EmulatorWindow::ControllerHotKey EmulatorWindow::ProcessControllerHotkey(
 
       if (selected_title_index < recently_launched_titles_.size()) {
         app_context().CallInUIThread([this]() {
-          RunTitle(
+          LaunchTitleInNewProcess(
               recently_launched_titles_[selected_title_index].path_to_file);
         });
       }
@@ -1997,6 +2084,94 @@ std::string EmulatorWindow::CanonicalizeFileExtension(
   return xe::utf8::lower_ascii(xe::path_to_utf8(path.extension()));
 }
 
+void EmulatorWindow::LaunchTitleInNewProcess(
+    const std::filesystem::path& path_to_file) {
+  // Get the path to the current executable
+  std::filesystem::path executable_path = xe::filesystem::GetExecutablePath();
+
+  // Verify the file exists
+  if (!std::filesystem::exists(path_to_file)) {
+    XELOGE("Cannot launch title - file not found: {}", path_to_file.string());
+    return;
+  }
+
+#if XE_PLATFORM_WIN32
+  // On Windows, build command line in UTF-16 for Win32 API
+  std::wstringstream cmd_line;
+  cmd_line << L"\"" << executable_path.wstring() << L"\"";
+
+  // Pass the config file path if one is being used
+  if (!cvars::config.empty()) {
+    cmd_line << L" --config=\"" << xe::to_utf16(cvars::config) << L"\"";
+  }
+
+  // Add the target game file
+  cmd_line << L" \"" << path_to_file.wstring() << L"\"";
+
+  std::wstring cmd_str = cmd_line.str();
+
+  STARTUPINFOW si = {};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi = {};
+
+  if (!CreateProcessW(nullptr,  // Application name (use command line)
+                      const_cast<wchar_t*>(cmd_str.c_str()),  // Command line
+                      nullptr,             // Process attributes
+                      nullptr,             // Thread attributes
+                      FALSE,               // Inherit handles
+                      CREATE_NEW_CONSOLE,  // Creation flags
+                      nullptr,             // Environment
+                      nullptr,             // Current directory
+                      &si,                 // Startup info
+                      &pi)) {              // Process information
+    XELOGE("Failed to launch new process: {}", GetLastError());
+    return;
+  }
+
+  // Store the process handle so we can terminate it later if needed
+  child_processes_.push_back(pi.hProcess);
+
+  // Close thread handle as we don't need it
+  CloseHandle(pi.hThread);
+#else
+  // On Linux/Unix, use fork/exec for proper process creation
+  pid_t pid = fork();
+
+  if (pid == 0) {
+    // Child process
+    std::vector<const char*> argv;
+    argv.push_back(executable_path.c_str());
+
+    // Pass the config file if one is being used
+    std::string config_arg;
+    if (!cvars::config.empty()) {
+      config_arg = "--config=" + cvars::config;
+      argv.push_back(config_arg.c_str());
+    }
+
+    // Add the target game file
+    std::string target_arg = path_to_file.string();
+    argv.push_back(target_arg.c_str());
+    argv.push_back(nullptr);
+
+    // Execute the new process
+    execv(executable_path.c_str(), const_cast<char**>(argv.data()));
+
+    // If execv returns, it failed
+    XELOGE("Failed to execute: {}", executable_path.string());
+    std::exit(1);
+  } else if (pid < 0) {
+    // Fork failed
+    XELOGE("Failed to fork process");
+    return;
+  }
+  // Parent process continues - store child PID
+  child_processes_.push_back(pid);
+#endif
+
+  XELOGI("Launched title in new process: {}", path_to_file.string());
+}
+
 xe::X_STATUS EmulatorWindow::RunTitle(
     const std::filesystem::path& path_to_file) {
   std::error_code ec = {};
@@ -2090,7 +2265,7 @@ xe::X_STATUS EmulatorWindow::RunTitle(
 
 void EmulatorWindow::RunPreviouslyPlayedTitle() {
   if (recently_launched_titles_.size() >= 1) {
-    RunTitle(recently_launched_titles_[0].path_to_file);
+    LaunchTitleInNewProcess(recently_launched_titles_[0].path_to_file);
   }
 }
 
@@ -2104,9 +2279,10 @@ void EmulatorWindow::FillRecentlyLaunchedTitlesMenu(
                                       ? entry.path_to_file.string()
                                       : entry.title_name;
 
-    recent_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, item_text, hotkey,
-        std::bind(&EmulatorWindow::RunTitle, this, entry.path_to_file)));
+    recent_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, item_text, hotkey,
+                         std::bind(&EmulatorWindow::LaunchTitleInNewProcess,
+                                   this, entry.path_to_file)));
   }
 }
 

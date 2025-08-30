@@ -8,6 +8,8 @@
  */
 
 #include <gtk/gtk.h>
+#include <signal.h>
+#include <sys/wait.h>
 #include <cstdio>
 #include <cstdlib>
 
@@ -20,6 +22,20 @@ int main(int argc_pre_gtk, char** argv_pre_gtk) {
   // Before touching anything GTK+, make sure that when running on Wayland,
   // we'll still get an X11 (Xwayland) window
   setenv("GDK_BACKEND", "x11", 1);
+
+  // Set up SIGCHLD handler to automatically reap zombie children
+  // This prevents defunct processes when launching games
+  struct sigaction sa;
+  sa.sa_handler = [](int sig) {
+    // Reap all available zombie children
+    int status;
+    while (waitpid(-1, &status, WNOHANG) > 0) {
+      // Child reaped successfully
+    }
+  };
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = SA_RESTART;  // Restart interrupted system calls
+  sigaction(SIGCHLD, &sa, nullptr);
 
   // Initialize GTK+, which will handle and remove its own arguments from argv.
   // Both GTK+ and Xenia use --option=value argument format (see man
@@ -47,8 +63,13 @@ int main(int argc_pre_gtk, char** argv_pre_gtk) {
                                app->GetPositionalOptionsUsage(),
                                app->GetPositionalOptions());
 
+    // Detect if this is a game process based on positional arguments
+    // Game process has a target file passed as positional argument
+    bool is_game_process = !app->GetPositionalOptions().empty() &&
+                           !app->GetPositionalOptions()[0].empty();
+
     // Initialize logging. Needs parsed cvars.
-    xe::InitializeLogging(app->GetName());
+    xe::InitializeLogging(app->GetName(), is_game_process);
 
     if (app->OnInitialize()) {
       app_context.RunMainGTKLoop();
