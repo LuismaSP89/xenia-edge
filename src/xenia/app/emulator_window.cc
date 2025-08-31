@@ -2113,36 +2113,36 @@ void EmulatorWindow::LaunchTitleInNewProcess(
   }
 
 #if XE_PLATFORM_WIN32
-  // On Windows, build command line in UTF-16 for Win32 API
-  std::wstringstream cmd_line;
-  cmd_line << L"\"" << executable_path.wstring() << L"\"";
+  // On Windows, build command line using Xenia's Unicode path handling
+  auto exe_path_u16 = xe::path_to_utf16(executable_path);
+  auto game_path_u16 = xe::path_to_utf16(path_to_file);
+
+  // Build full command line with quotes for paths that may contain spaces
+  std::u16string cmd_line = u"\"" + exe_path_u16 + u"\"";
 
   // Pass the config file path if one is being used
   if (!cvars::config.empty()) {
-    auto config_u16 = xe::to_utf16(cvars::config);
-    std::wstring config_wstr(config_u16.begin(), config_u16.end());
-    cmd_line << L" --config=\"" << config_wstr << L"\"";
+    cmd_line += u" --config=\"" + xe::to_utf16(cvars::config) + u"\"";
   }
 
   // Add the target game file
-  cmd_line << L" \"" << path_to_file.wstring() << L"\"";
-
-  std::wstring cmd_str = cmd_line.str();
+  cmd_line += u" \"" + game_path_u16 + u"\"";
 
   STARTUPINFOW si = {};
   si.cb = sizeof(si);
   PROCESS_INFORMATION pi = {};
 
   if (!CreateProcessW(nullptr,  // Application name (use command line)
-                      const_cast<wchar_t*>(cmd_str.c_str()),  // Command line
-                      nullptr,             // Process attributes
-                      nullptr,             // Thread attributes
-                      FALSE,               // Inherit handles
-                      CREATE_NEW_CONSOLE,  // Creation flags
-                      nullptr,             // Environment
-                      nullptr,             // Current directory
-                      &si,                 // Startup info
-                      &pi)) {              // Process information
+                      const_cast<wchar_t*>(reinterpret_cast<const wchar_t*>(
+                          cmd_line.c_str())),  // Command line
+                      nullptr,                 // Process attributes
+                      nullptr,                 // Thread attributes
+                      FALSE,                   // Inherit handles
+                      CREATE_NEW_CONSOLE,      // Creation flags
+                      nullptr,                 // Environment
+                      nullptr,                 // Current directory
+                      &si,                     // Startup info
+                      &pi)) {                  // Process information
     XELOGE("Failed to launch new process: {}", GetLastError());
     return;
   }
