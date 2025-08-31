@@ -688,8 +688,7 @@ void EmulatorApp::EmulatorThread(bool is_game_process) {
     // Normalize the path and make absolute.
     auto abs_path = std::filesystem::absolute(path);
 
-    result = app_context().CallInUIThread(
-        [this, abs_path]() { return emulator_window_->RunTitle(abs_path); });
+    result = emulator_->LaunchPath(abs_path);
     if (XFAILED(result)) {
       xe::FatalError(fmt::format("Failed to launch target: {:08X}", result));
       app_context().RequestDeferredQuit();
@@ -705,9 +704,7 @@ void EmulatorApp::EmulatorThread(bool is_game_process) {
 
     if (xam->loader_data().launch_data_present) {
       const std::filesystem::path host_path = xam->loader_data().host_path;
-      app_context().CallInUIThread([this, host_path]() {
-        return emulator_window_->RunTitle(host_path);
-      });
+      emulator_->LaunchPath(host_path);
     }
   }
 
