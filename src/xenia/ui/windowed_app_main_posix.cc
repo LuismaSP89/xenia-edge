@@ -18,6 +18,8 @@
 #include "xenia/ui/windowed_app.h"
 #include "xenia/ui/windowed_app_context_gtk.h"
 
+DECLARE_path(target);
+
 int main(int argc_pre_gtk, char** argv_pre_gtk) {
   // Before touching anything GTK+, make sure that when running on Wayland,
   // we'll still get an X11 (Xwayland) window
@@ -63,10 +65,8 @@ int main(int argc_pre_gtk, char** argv_pre_gtk) {
                                app->GetPositionalOptionsUsage(),
                                app->GetPositionalOptions());
 
-    // Detect if this is a game process based on positional arguments
-    // Game process has a target file passed as positional argument
-    bool is_game_process = !app->GetPositionalOptions().empty() &&
-                           !app->GetPositionalOptions()[0].empty();
+    // Check if this is a game process (has target) or UI process
+    bool is_game_process = !cvars::target.empty();
 
     // Initialize logging. Needs parsed cvars.
     xe::InitializeLogging(app->GetName(), is_game_process);

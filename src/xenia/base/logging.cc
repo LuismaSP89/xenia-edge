@@ -445,7 +445,7 @@ void InitializeLogging(const std::string_view app_name, bool is_game_process) {
     if (is_game_process) {
       file_name = fmt::format("{}_game.log", app_name);
     } else {
-      file_name = fmt::format("{}_ui.log", app_name);
+      file_name = fmt::format("{}.log", app_name);
     }
     auto file_path = xe::filesystem::GetExecutableFolder() / file_name;
     log_file = xe::filesystem::OpenFile(file_path, "wt");

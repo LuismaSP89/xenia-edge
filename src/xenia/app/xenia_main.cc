@@ -249,7 +249,7 @@ class EmulatorApp final : public xe::ui::WindowedApp {
   static std::vector<std::unique_ptr<hid::InputDriver>> CreateInputDrivers(
       ui::Window* window);
 
-  void EmulatorThread();
+  void EmulatorThread(bool is_game_process);
   void ShutdownEmulatorThreadFromUIThread();
 
   DebugWindowClosedListener debug_window_closed_listener_;
@@ -525,7 +525,8 @@ bool EmulatorApp::OnInitialize() {
   emulator_thread_quit_requested_.store(false, std::memory_order_relaxed);
   emulator_thread_event_ = xe::threading::Event::CreateAutoResetEvent(false);
   assert_not_null(emulator_thread_event_);
-  emulator_thread_ = std::thread(&EmulatorApp::EmulatorThread, this);
+  emulator_thread_ =
+      std::thread(&EmulatorApp::EmulatorThread, this, is_game_process);
 
   return true;
 }
@@ -549,7 +550,7 @@ void EmulatorApp::OnDestroy() {
   std::quick_exit(EXIT_SUCCESS);
 }
 
-void EmulatorApp::EmulatorThread() {
+void EmulatorApp::EmulatorThread(bool is_game_process) {
   assert_not_null(emulator_thread_event_);
 
   xe::threading::set_name("Emulator");
@@ -557,9 +558,11 @@ void EmulatorApp::EmulatorThread() {
 
   // Setup and initialize all subsystems. If we can't do something
   // (unsupported system, memory issues, etc) this will fail early.
+  // Only load input drivers if this is a game process
   X_STATUS result = emulator_->Setup(
       emulator_window_->window(), emulator_window_->imgui_drawer(), true,
-      CreateAudioSystem, CreateGraphicsSystem, CreateInputDrivers);
+      CreateAudioSystem, CreateGraphicsSystem,
+      is_game_process ? CreateInputDrivers : nullptr);
   if (XFAILED(result)) {
     XELOGE("Failed to setup emulator: {:08X}", result);
     app_context().RequestDeferredQuit();
