@@ -775,6 +775,12 @@ GTKMenuItem::~GTKMenuItem() {
   }
 }
 
+void GTKMenuItem::SetEnabled(bool enabled) {
+  if (menu_) {
+    gtk_widget_set_sensitive(menu_, enabled ? TRUE : FALSE);
+  }
+}
+
 void GTKMenuItem::OnChildAdded(MenuItem* generic_child_item) {
   auto child_item = dynamic_cast<GTKMenuItem*>(generic_child_item);
   GtkWidget* submenu = nullptr;

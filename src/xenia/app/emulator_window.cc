@@ -223,9 +223,6 @@ std::unique_ptr<EmulatorWindow> EmulatorWindow::Create(
 }
 
 EmulatorWindow::~EmulatorWindow() {
-  XELOGI("EmulatorWindow destructor called, killing {} child processes",
-         child_processes_.size());
-
   // Kill all child processes when the parent window is destroyed
 #if XE_PLATFORM_WIN32
   for (HANDLE process : child_processes_) {
@@ -334,9 +331,6 @@ void EmulatorWindow::OnEmulatorInitialized() {
 
 void EmulatorWindow::EmulatorWindowListener::OnClosing(ui::UIEvent& e) {
   // Kill all child processes when the parent window is closing
-  XELOGI("Window closing, killing {} child processes",
-         emulator_window_.child_processes_.size());
-
 #if XE_PLATFORM_WIN32
   for (HANDLE process : emulator_window_.child_processes_) {
     DWORD exit_code;
@@ -366,6 +360,15 @@ void EmulatorWindow::EmulatorWindowListener::OnClosing(ui::UIEvent& e) {
 
 void EmulatorWindow::EmulatorWindowListener::OnFileDrop(ui::FileDropEvent& e) {
   emulator_window_.FileDrop(e.filename());
+}
+
+void EmulatorWindow::EmulatorWindowListener::OnGotFocus(ui::UISetupEvent& e) {
+  // Check child process status when window regains focus
+  // This handles the case where a child process exits while our window doesn't
+  // have focus
+  if (!emulator_window_.is_game_process_) {
+    emulator_window_.UpdateChildProcessStatus();
+  }
 }
 
 void EmulatorWindow::EmulatorWindowListener::OnKeyDown(ui::KeyEvent& e) {
@@ -741,14 +744,28 @@ bool EmulatorWindow::Initialize() {
     // UI process - create the menu bar
     // FIXME: This code is really messy.
     auto main_menu = MenuItem::Create(MenuItem::Type::kNormal);
-    auto file_menu = MenuItem::Create(MenuItem::Type::kPopup, "&File");
+
+    // Create File menu with a callback that checks child status when clicked
+    auto file_menu =
+        MenuItem::Create(MenuItem::Type::kPopup, "&File", "", [this]() {
+          // Check child process status when File menu is clicked
+          UpdateChildProcessStatus();
+        });
+    file_menu_ = file_menu.get();
     auto recent_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Open Recent");
     auto zar_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Zar Package");
     FillRecentlyLaunchedTitlesMenu(recent_menu.get());
     {
-      file_menu->AddChild(
-          MenuItem::Create(MenuItem::Type::kString, "&Open...", "Ctrl+O",
-                           std::bind(&EmulatorWindow::FileOpen, this)));
+      auto open_item = MenuItem::Create(MenuItem::Type::kString, "&Open...",
+                                        "Ctrl+O", [this]() {
+                                          // Check child process status when
+                                          // menu item is clicked
+                                          UpdateChildProcessStatus();
+                                          FileOpen();
+                                        });
+      file_open_item_ = open_item.get();
+      file_menu->AddChild(std::move(open_item));
+      file_open_recent_menu_ = recent_menu.get();
       file_menu->AddChild(std::move(recent_menu));
       file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
       file_menu->AddChild(
@@ -2172,6 +2189,54 @@ void EmulatorWindow::LaunchTitleInNewProcess(
 #endif
 
   XELOGI("Launched title in new process: {}", path_to_file.string());
+
+  // Disable menu items since we have a running child process
+  UpdateChildProcessStatus();
+}
+
+bool EmulatorWindow::HasRunningChildProcess() {
+  // Simple check: use kill(pid, 0) to see if any child processes are still
+  // alive Remove dead processes from our list
+  bool has_running = false;
+
+#if XE_PLATFORM_WIN32
+  for (auto it = child_processes_.begin(); it != child_processes_.end();) {
+    DWORD exit_code;
+    if (GetExitCodeProcess(*it, &exit_code) && exit_code == STILL_ACTIVE) {
+      has_running = true;
+      ++it;
+    } else {
+      // Process has exited
+      CloseHandle(*it);
+      it = child_processes_.erase(it);
+    }
+  }
+#else
+  for (auto it = child_processes_.begin(); it != child_processes_.end();) {
+    if (kill(*it, 0) == 0) {
+      // Process still exists
+      has_running = true;
+      ++it;
+    } else {
+      // Process doesn't exist anymore
+      it = child_processes_.erase(it);
+    }
+  }
+#endif
+
+  return has_running;
+}
+
+void EmulatorWindow::UpdateChildProcessStatus() {
+  bool has_child = HasRunningChildProcess();
+
+  // Enable/disable menu items based on whether a child process is running
+  if (file_open_item_) {
+    file_open_item_->SetEnabled(!has_child);
+  }
+  if (file_open_recent_menu_) {
+    file_open_recent_menu_->SetEnabled(!has_child);
+  }
 }
 
 xe::X_STATUS EmulatorWindow::RunTitle(
@@ -2281,10 +2346,14 @@ void EmulatorWindow::FillRecentlyLaunchedTitlesMenu(
                                       ? entry.path_to_file.string()
                                       : entry.title_name;
 
-    recent_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, item_text, hotkey,
-                         std::bind(&EmulatorWindow::LaunchTitleInNewProcess,
-                                   this, entry.path_to_file)));
+    recent_menu->AddChild(MenuItem::Create(MenuItem::Type::kString, item_text,
+                                           hotkey,
+                                           [this, path = entry.path_to_file]() {
+                                             // Check child process status when
+                                             // menu item is clicked
+                                             UpdateChildProcessStatus();
+                                             LaunchTitleInNewProcess(path);
+                                           }));
   }
 }
 

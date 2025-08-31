@@ -84,6 +84,8 @@ class EmulatorWindow {
   void LaunchTitleInNewProcess(const std::filesystem::path& path_to_file);
   xe::X_STATUS RunTitle(const std::filesystem::path& path_to_file);
   void UpdateTitle();
+  bool HasRunningChildProcess();
+  void UpdateChildProcessStatus();
   void SetFullscreen(bool fullscreen);
   void ToggleFullscreen();
   void SetInitializingShaderStorage(bool initializing);
@@ -144,6 +146,7 @@ class EmulatorWindow {
 
     void OnClosing(ui::UIEvent& e) override;
     void OnFileDrop(ui::FileDropEvent& e) override;
+    void OnGotFocus(ui::UISetupEvent& e) override;
 
     void OnKeyDown(ui::KeyEvent& e) override;
 
@@ -304,6 +307,11 @@ class EmulatorWindow {
   std::unique_ptr<ProfileConfigDialog> profile_config_dialog_;
 
   std::vector<RecentTitleEntry> recently_launched_titles_;
+
+  // Menu items that need to be enabled/disabled based on child process state
+  ui::MenuItem* file_menu_ = nullptr;
+  ui::MenuItem* file_open_item_ = nullptr;
+  ui::MenuItem* file_open_recent_menu_ = nullptr;
 };
 
 }  // namespace app
