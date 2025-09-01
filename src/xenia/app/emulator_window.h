@@ -86,6 +86,15 @@ class EmulatorWindow {
   void UpdateTitle();
   bool HasRunningChildProcess();
   void UpdateChildProcessStatus();
+
+  // Keyboard forwarding for child processes
+  void SendKeyToChild(ui::VirtualKey key, bool ctrl = false, bool alt = false,
+                      bool shift = false);
+  void SendCommandToChild(const std::string& command);
+  void ExecuteOrForward(std::function<void()> local_action, ui::VirtualKey key,
+                        bool ctrl = false, bool alt = false,
+                        bool shift = false);
+
   void SetFullscreen(bool fullscreen);
   void ToggleFullscreen();
   void SetInitializingShaderStorage(bool initializing);

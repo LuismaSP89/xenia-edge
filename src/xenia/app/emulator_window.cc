@@ -11,6 +11,7 @@
 
 #include <cstdlib>
 #include <sstream>
+#include <thread>
 #include "third_party/imgui/imgui.h"
 #include "third_party/stb/stb_image_write.h"
 #include "third_party/tomlplusplus/toml.hpp"
@@ -33,6 +34,30 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
+
+#if XE_PLATFORM_LINUX
+#include <errno.h>
+#include <fcntl.h>
+#include <string.h>
+#include <sys/stat.h>
+// X11 headers - include before other headers that might define None
+#include <X11/Xatom.h>
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <X11/extensions/XTest.h>
+#include <X11/keysym.h>
+#include <gdk/gdk.h>
+#include <gdk/gdkkeysyms.h>
+#include <gdk/gdkx.h>
+#include <unistd.h>  // for usleep
+// Undefine X11 macros that conflict with our code
+#ifdef None
+#undef None
+#endif
+#ifdef Success
+#undef Success
+#endif
 #endif
 
 #include "xenia/cpu/processor.h"
@@ -739,6 +764,90 @@ bool EmulatorWindow::Initialize() {
   window_->AddListener(&window_listener_);
   window_->AddInputListener(&window_listener_, kZOrderEmulatorWindowInput);
 
+#if XE_PLATFORM_LINUX
+  // If this is a game process, create a named pipe for IPC
+  if (is_game_process_) {
+    pid_t pid = getpid();
+    std::string pipe_path = fmt::format("/tmp/xenia_ipc_{}", pid);
+
+    // Remove any existing pipe
+    unlink(pipe_path.c_str());
+
+    // Create the named pipe
+    if (mkfifo(pipe_path.c_str(), 0666) == 0) {
+      XELOGI("Created IPC pipe at: {}", pipe_path);
+
+      // Start a thread to listen for commands
+      std::thread ipc_thread([this, pipe_path]() {
+        while (!emulator_initialized_) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+
+        XELOGI("Starting IPC listener thread");
+        char buffer[256];
+        while (true) {
+          int fd = open(pipe_path.c_str(), O_RDONLY);
+          if (fd == -1) {
+            XELOGW("Failed to open pipe for reading: {}", strerror(errno));
+            break;
+          }
+
+          ssize_t bytes_read = read(fd, buffer, sizeof(buffer) - 1);
+          if (bytes_read > 0) {
+            buffer[bytes_read] = '\0';
+            std::string command(buffer);
+            // Remove trailing newline
+            if (!command.empty() && command.back() == '\n') {
+              command.pop_back();
+            }
+
+            XELOGI("Received IPC command: '{}'", command);
+
+            // Execute command directly - if we get crashes, we'll need to use
+            // UI thread
+            if (command == "toggle_fullscreen") {
+              ToggleFullscreen();
+            } else if (command == "take_screenshot") {
+              TakeScreenshot();
+            } else if (command == "toggle_profiler") {
+              Profiler::ToggleDisplay();
+            } else if (command == "gpu_trace_frame") {
+              GpuTraceFrame();
+            } else if (command == "gpu_clear_caches") {
+              GpuClearCaches();
+            } else if (command == "toggle_display_config") {
+              ToggleDisplayConfigDialog();
+            } else if (command == "cpu_time_scalar_reset") {
+              CpuTimeScalarReset();
+            } else if (command == "cpu_time_scalar_half") {
+              CpuTimeScalarSetHalf();
+            } else if (command == "cpu_time_scalar_double") {
+              CpuTimeScalarSetDouble();
+            } else if (command == "break_debugger") {
+              CpuBreakIntoDebugger();
+            } else {
+              XELOGW("Unknown IPC command: {}", command);
+            }
+          }
+          close(fd);
+
+          // Check if we should exit
+          if (bytes_read <= 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          }
+        }
+
+        // Clean up pipe on exit
+        unlink(pipe_path.c_str());
+        XELOGI("IPC listener thread exiting");
+      });
+      ipc_thread.detach();
+    } else {
+      XELOGW("Failed to create IPC pipe: {}", strerror(errno));
+    }
+  }
+#endif
+
   // Main menu - only create for UI process, not game process
   if (!is_game_process_) {
     // UI process - create the menu bar
@@ -842,9 +951,11 @@ bool EmulatorWindow::Initialize() {
     // GPU menu.
     auto gpu_menu = MenuItem::Create(MenuItem::Type::kPopup, "&GPU");
     {
-      gpu_menu->AddChild(
-          MenuItem::Create(MenuItem::Type::kString, "&Trace Frame", "F4",
-                           std::bind(&EmulatorWindow::GpuTraceFrame, this)));
+      gpu_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "&Trace Frame", "F4", [this]() {
+            ExecuteOrForward(std::bind(&EmulatorWindow::GpuTraceFrame, this),
+                             ui::VirtualKey::kF4);
+          }));
     }
     gpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
     {
@@ -863,12 +974,16 @@ bool EmulatorWindow::Initialize() {
     }
     display_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
     {
-      display_menu->AddChild(
-          MenuItem::Create(MenuItem::Type::kString, "&Fullscreen", "F11",
-                           std::bind(&EmulatorWindow::ToggleFullscreen, this)));
-      display_menu->AddChild(
-          MenuItem::Create(MenuItem::Type::kString, "&Take Screenshot", "F12",
-                           std::bind(&EmulatorWindow::TakeScreenshot, this)));
+      display_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "&Fullscreen", "F11", [this]() {
+            ExecuteOrForward(std::bind(&EmulatorWindow::ToggleFullscreen, this),
+                             ui::VirtualKey::kF11);
+          }));
+      display_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "&Take Screenshot", "F12", [this]() {
+            ExecuteOrForward(std::bind(&EmulatorWindow::TakeScreenshot, this),
+                             ui::VirtualKey::kF12);
+          }));
     }
     main_menu->AddChild(std::move(display_menu));
 
@@ -1018,6 +1133,38 @@ void EmulatorWindow::ApplyDisplayConfigForCvars() {
 void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
   if (!emulator_initialized_) {
     return;
+  }
+
+  // If we're the UI process and have a child process running, forward certain
+  // keys
+  if (!is_game_process_ && HasRunningChildProcess()) {
+    // Forward keys that should be handled by the game process
+    switch (e.virtual_key()) {
+      case ui::VirtualKey::kF11:
+      case ui::VirtualKey::kF12:
+      case ui::VirtualKey::kMultiply:  // Numpad *
+      case ui::VirtualKey::kSubtract:  // Numpad -
+      case ui::VirtualKey::kAdd:       // Numpad +
+      case ui::VirtualKey::kF3:
+      case ui::VirtualKey::kF4:
+      case ui::VirtualKey::kF5:
+      case ui::VirtualKey::kF6:
+        SendKeyToChild(e.virtual_key(), e.is_ctrl_pressed(), e.is_alt_pressed(),
+                       e.is_shift_pressed());
+        e.set_handled(true);
+        return;
+      case ui::VirtualKey::kPause:
+        if (e.is_ctrl_pressed() && e.is_shift_pressed()) {
+          SendKeyToChild(e.virtual_key(), e.is_ctrl_pressed(),
+                         e.is_alt_pressed(), e.is_shift_pressed());
+          e.set_handled(true);
+          return;
+        }
+        break;
+      default:
+        // Let other keys fall through to be handled locally
+        break;
+    }
   }
 
   switch (e.virtual_key()) {
@@ -2236,6 +2383,142 @@ void EmulatorWindow::UpdateChildProcessStatus() {
   }
   if (file_open_recent_menu_) {
     file_open_recent_menu_->SetEnabled(!has_child);
+  }
+}
+
+void EmulatorWindow::SendCommandToChild(const std::string& command) {
+#if XE_PLATFORM_LINUX
+  if (!child_processes_.empty()) {
+    // Use a named pipe to send commands to child process
+    std::string pipe_path =
+        fmt::format("/tmp/xenia_ipc_{}", child_processes_[0]);
+
+    int fd = open(pipe_path.c_str(), O_WRONLY | O_NONBLOCK);
+    if (fd != -1) {
+      std::string message = command + "\n";
+      ssize_t written = write(fd, message.c_str(), message.length());
+      close(fd);
+
+      if (written > 0) {
+        XELOGI("Sent command '{}' to child process via pipe", command);
+      } else {
+        XELOGW("Failed to write command to pipe");
+      }
+    } else {
+      XELOGW("Could not open pipe {} for writing: {}", pipe_path,
+             strerror(errno));
+    }
+  }
+#elif XE_PLATFORM_WIN32
+  // Windows implementation could use named pipes or other IPC
+  XELOGW("Command forwarding not yet implemented for Windows");
+#endif
+}
+
+void EmulatorWindow::SendKeyToChild(ui::VirtualKey key, bool ctrl, bool alt,
+                                    bool shift) {
+#if XE_PLATFORM_LINUX
+  // Convert key combination to command string
+  std::string command;
+  switch (key) {
+    case ui::VirtualKey::kF3:
+      command = "toggle_profiler";
+      break;
+    case ui::VirtualKey::kF4:
+      command = "gpu_trace_frame";
+      break;
+    case ui::VirtualKey::kF5:
+      command = "gpu_clear_caches";
+      break;
+    case ui::VirtualKey::kF6:
+      command = "toggle_display_config";
+      break;
+    case ui::VirtualKey::kF11:
+      command = "toggle_fullscreen";
+      break;
+    case ui::VirtualKey::kF12:
+      command = "take_screenshot";
+      break;
+    case ui::VirtualKey::kMultiply:
+      command = "cpu_time_scalar_reset";
+      break;
+    case ui::VirtualKey::kSubtract:
+      command = "cpu_time_scalar_half";
+      break;
+    case ui::VirtualKey::kAdd:
+      command = "cpu_time_scalar_double";
+      break;
+    case ui::VirtualKey::kPause:
+      if (ctrl && shift) command = "break_debugger";
+      break;
+    default:
+      XELOGW("Unknown key combination for command forwarding");
+      return;
+  }
+
+  if (!command.empty()) {
+    SendCommandToChild(command);
+  }
+#endif
+
+#if XE_PLATFORM_WIN32
+  // Windows implementation
+  if (!child_processes_.empty()) {
+    // Get the process ID from our first child
+    DWORD pid = GetProcessId(child_processes_[0]);
+
+    // Find windows belonging to this process
+    struct EnumData {
+      DWORD pid;
+      HWND hwnd;
+    } data = {pid, nullptr};
+
+    EnumWindows(
+        [](HWND hwnd, LPARAM lParam) -> BOOL {
+          auto* data = reinterpret_cast<EnumData*>(lParam);
+          DWORD window_pid;
+          GetWindowThreadProcessId(hwnd, &window_pid);
+          if (window_pid == data->pid && IsWindowVisible(hwnd)) {
+            data->hwnd = hwnd;
+            return FALSE;  // Stop enumeration
+          }
+          return TRUE;  // Continue enumeration
+        },
+        reinterpret_cast<LPARAM>(&data));
+
+    if (data.hwnd) {
+      XELOGI("Found child window handle: {}",
+             reinterpret_cast<void*>(data.hwnd));
+
+      // Send the key events
+      if (ctrl) PostMessage(data.hwnd, WM_KEYDOWN, VK_CONTROL, 0);
+      if (alt) PostMessage(data.hwnd, WM_KEYDOWN, VK_MENU, 0);
+      if (shift) PostMessage(data.hwnd, WM_KEYDOWN, VK_SHIFT, 0);
+
+      // Convert VirtualKey to Windows VK code (they should mostly match)
+      WPARAM vk = static_cast<WPARAM>(key);
+      PostMessage(data.hwnd, WM_KEYDOWN, vk, 0);
+      PostMessage(data.hwnd, WM_KEYUP, vk, 0);
+
+      if (shift) PostMessage(data.hwnd, WM_KEYUP, VK_SHIFT, 0);
+      if (alt) PostMessage(data.hwnd, WM_KEYUP, VK_MENU, 0);
+      if (ctrl) PostMessage(data.hwnd, WM_KEYUP, VK_CONTROL, 0);
+    } else {
+      XELOGW("Could not find window for child process");
+    }
+  }
+#endif
+}
+
+void EmulatorWindow::ExecuteOrForward(std::function<void()> local_action,
+                                      ui::VirtualKey key, bool ctrl, bool alt,
+                                      bool shift) {
+  if (HasRunningChildProcess()) {
+    XELOGI("Has child process - forwarding key instead of executing action");
+    SendKeyToChild(key, ctrl, alt, shift);
+  } else {
+    XELOGI("No child process - executing action locally");
+    local_action();
   }
 }
 
