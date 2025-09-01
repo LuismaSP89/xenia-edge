@@ -70,7 +70,7 @@ void PatchesDialog::LoadPatchFiles() {
 
     for (size_t i = 0; i < patch_file.patch_info.size(); ++i) {
       PatchInfo info;
-      info.id = i;
+      info.id = static_cast<uint32_t>(i);
       info.name = patch_file.patch_info[i].patch_name;
       info.description = patch_file.patch_info[i].patch_desc;
       info.author = patch_file.patch_info[i].patch_author;
@@ -164,8 +164,15 @@ void PatchesDialog::OnDraw(ImGuiIO& io) {
   ImGui::SetNextWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowPos(ImVec2(100, 100), ImGuiCond_FirstUseEver);
 
-  if (!ImGui::Begin("Patch Manager", nullptr, ImGuiWindowFlags_NoCollapse)) {
+  bool window_open = true;
+  if (!ImGui::Begin("Patch Manager", &window_open,
+                    ImGuiWindowFlags_NoCollapse)) {
     ImGui::End();
+    return;
+  }
+
+  if (!window_open) {
+    Close();
     return;
   }
 
@@ -191,11 +198,6 @@ void PatchesDialog::OnDraw(ImGuiIO& io) {
       std::filesystem::create_directories(patches_directory_);
     }
     LaunchFileExplorer(patches_directory_);
-  }
-
-  ImGui::SameLine();
-  if (ImGui::Button("Close")) {
-    Close();
   }
 
   ImGui::Separator();
