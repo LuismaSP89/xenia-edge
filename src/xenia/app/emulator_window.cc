@@ -334,6 +334,11 @@ void EmulatorWindow::OnEmulatorInitialized() {
     disable_hotkeys_ = true;
   }
 
+  // Show recently played games list when the app starts
+  if (!recently_launched_titles_.empty() && !is_game_process_) {
+    new RecentTitlesUI(imgui_drawer_.get(), this);
+  }
+
   emulator_initialized_ = true;
   window_->SetMainMenuEnabled(true);
   // When the user can see that the emulator isn't initializing anymore (the

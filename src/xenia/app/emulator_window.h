@@ -14,6 +14,7 @@
 #include <string>
 
 #include "xenia/app/profile_dialogs.h"
+#include "xenia/app/recent_titles_ui.h"
 #include "xenia/emulator.h"
 #include "xenia/gpu/command_processor.h"
 #include "xenia/ui/imgui_dialog.h"
@@ -106,6 +107,10 @@ class EmulatorWindow {
 
   void ToggleProfilesConfigDialog();
   void SetHotkeysState(bool enabled) { disable_hotkeys_ = !enabled; }
+  void FileOpen();
+  const std::vector<RecentTitleEntry>& GetRecentlyLaunchedTitles() const {
+    return recently_launched_titles_;
+  }
 
   // Types of button functions for hotkeys.
   enum class ButtonFunctions {
@@ -248,7 +253,6 @@ class EmulatorWindow {
   void ToggleFullscreenOnDoubleClick();
   void FileDrop(const std::filesystem::path& filename);
   void OnMouseUp(const ui::MouseEvent& e);
-  void FileOpen();
   void FileClose();
   void InstallContent();
   void ExtractZarchive();
