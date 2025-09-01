@@ -769,6 +769,12 @@ bool EmulatorWindow::Initialize() {
   window_->AddListener(&window_listener_);
   window_->AddInputListener(&window_listener_, kZOrderEmulatorWindowInput);
 
+  // Set up callback to notify child processes when config is saved
+  if (!is_game_process_) {
+    config::SetConfigSavedCallback(
+        [this]() { SendCommandToChild("reload_config"); });
+  }
+
 #if XE_PLATFORM_LINUX
   // If this is a game process, create a named pipe for IPC
   if (is_game_process_) {
@@ -830,6 +836,19 @@ bool EmulatorWindow::Initialize() {
               CpuTimeScalarSetDouble();
             } else if (command == "break_debugger") {
               CpuBreakIntoDebugger();
+            } else if (command == "reload_config") {
+              XELOGI("Reloading config from parent process request");
+              config::ReloadConfig();
+              // Sync the profile login state with the reloaded config
+              if (emulator_ && emulator_->kernel_state() &&
+                  emulator_->kernel_state()->xam_state() &&
+                  emulator_->kernel_state()->xam_state()->profile_manager()) {
+                emulator_->kernel_state()
+                    ->xam_state()
+                    ->profile_manager()
+                    ->SyncProfilesWithConfig();
+                XELOGI("Profile login state synchronized with config");
+              }
             } else {
               XELOGW("Unknown IPC command: {}", command);
             }

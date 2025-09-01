@@ -55,64 +55,81 @@ void RecentTitlesUI::LoadRecentTitles() {
         {entry.title_name, entry.path_to_file, entry.last_run_time, 0, {}});
   }
 
-  // Load icons if we have access to the emulator and user tracker
-  if (emulator_window_ && emulator_window_->emulator() &&
-      emulator_window_->emulator()->kernel_state() &&
-      emulator_window_->emulator()->kernel_state()->xam_state()) {
-    auto user_tracker = emulator_window_->emulator()
-                            ->kernel_state()
-                            ->xam_state()
-                            ->user_tracker();
+  // Don't try to load icons yet - defer until OnDraw when everything is ready
+  icons_loaded_ = false;
+}
 
-    if (user_tracker) {
-      ui::IconsData icon_data;
+void RecentTitlesUI::TryLoadIcons() {
+  if (icons_loaded_ || !emulator_window_ || !emulator_window_->emulator()) {
+    return;
+  }
 
-      auto profile_manager = emulator_window_->emulator()
-                                 ->kernel_state()
-                                 ->xam_state()
-                                 ->profile_manager();
+  auto kernel_state = emulator_window_->emulator()->kernel_state();
+  if (!kernel_state) {
+    return;
+  }
 
-      if (profile_manager) {
-        // Check all logged in profiles
-        for (uint8_t user_index = 0; user_index < 4; user_index++) {
-          const auto profile = profile_manager->GetProfile(user_index);
-          if (profile) {
-            // Get all played titles for this profile
-            auto played_titles = user_tracker->GetPlayedTitles(profile->xuid());
+  auto xam_state = kernel_state->xam_state();
+  if (!xam_state) {
+    return;
+  }
 
-            // Match each recent title with played titles by name
-            for (auto& recent_title : recent_titles_) {
-              for (const auto& played_title : played_titles) {
-                std::string played_name = xe::to_utf8(played_title.title_name);
-                // Remove null terminator if present
-                if (!played_name.empty() && played_name.back() == '\0') {
-                  played_name.pop_back();
-                }
-                std::string trimmed_played = xe::string_util::trim(played_name);
-                std::string trimmed_recent =
-                    xe::string_util::trim(recent_title.title_name);
+  auto user_tracker = xam_state->user_tracker();
+  auto profile_manager = xam_state->profile_manager();
 
-                if (trimmed_played == trimmed_recent) {
-                  if (!played_title.icon.empty()) {
-                    recent_title.icon = std::vector<uint8_t>(
-                        played_title.icon.begin(), played_title.icon.end());
-                    // Update the title ID from the played title
-                    recent_title.title_id = played_title.id;
-                    icon_data[recent_title.title_id] = recent_title.icon;
-                  }
-                  break;  // Found match for this recent title
-                }
-              }
-            }
-          }
+  if (!user_tracker || !profile_manager) {
+    return;
+  }
+
+  ui::IconsData icon_data;
+
+  // Check all logged in profiles
+  for (uint8_t user_index = 0; user_index < 4; user_index++) {
+    const auto profile = profile_manager->GetProfile(user_index);
+    if (!profile) {
+      continue;
+    }
+
+    // Get all played titles for this profile
+    auto played_titles = user_tracker->GetPlayedTitles(profile->xuid());
+
+    // Match each recent title with played titles by name
+    for (auto& recent_title : recent_titles_) {
+      for (const auto& played_title : played_titles) {
+        std::string played_name = xe::to_utf8(played_title.title_name);
+        // Remove null terminator if present
+        if (!played_name.empty() && played_name.back() == '\0') {
+          played_name.pop_back();
         }
-      }
+        std::string trimmed_played = xe::string_util::trim(played_name);
+        std::string trimmed_recent =
+            xe::string_util::trim(recent_title.title_name);
 
-      if (!icon_data.empty()) {
-        title_icons_ = imgui_drawer()->LoadIcons(icon_data);
+        if (trimmed_played == trimmed_recent) {
+          if (!played_title.icon.empty()) {
+            recent_title.icon = std::vector<uint8_t>(played_title.icon.begin(),
+                                                     played_title.icon.end());
+            // Update the title ID from the played title
+            recent_title.title_id = played_title.id;
+            icon_data[recent_title.title_id] = recent_title.icon;
+          }
+          break;  // Found match for this recent title
+        }
       }
     }
   }
+
+  if (!icon_data.empty() && imgui_drawer()) {
+    // Load icons individually
+    for (const auto& [title_id, icon_data_entry] : icon_data) {
+      auto texture = imgui_drawer()->LoadImGuiIcon(icon_data_entry);
+      if (texture) {
+        title_icons_[title_id] = std::move(texture);
+      }
+    }
+  }
+
+  icons_loaded_ = true;
 }
 
 void RecentTitlesUI::DrawTitleEntry(ImGuiIO& io, RecentTitleDisplay& entry,
@@ -122,10 +139,10 @@ void RecentTitlesUI::DrawTitleEntry(ImGuiIO& io, RecentTitleDisplay& entry,
   // First Column - Icon
   ImGui::TableSetColumnIndex(0);
 
-  if (title_icons_.count(entry.title_id)) {
-    ImGui::Image(
-        reinterpret_cast<ImTextureID>(title_icons_.at(entry.title_id).get()),
-        ui::default_image_icon_size);
+  auto icon_it = title_icons_.find(entry.title_id);
+  if (icon_it != title_icons_.end() && icon_it->second) {
+    ImGui::Image(reinterpret_cast<ImTextureID>(icon_it->second.get()),
+                 ui::default_image_icon_size);
   } else {
     ImGui::Dummy(ui::default_image_icon_size);
   }
@@ -204,6 +221,9 @@ void RecentTitlesUI::LaunchTitle(const std::filesystem::path& path) {
 }
 
 void RecentTitlesUI::OnDraw(ImGuiIO& io) {
+  // Try to load icons if not already loaded - deferred from constructor
+  TryLoadIcons();
+
   const auto window_position =
       ImVec2(GetIO().DisplaySize.x * 0.3f, GetIO().DisplaySize.y * 0.2f);
 

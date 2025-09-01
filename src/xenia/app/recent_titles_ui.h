@@ -42,6 +42,7 @@ class RecentTitlesUI final : public ui::ImGuiDialog {
 
  private:
   void LoadRecentTitles();
+  void TryLoadIcons();
   void DrawTitleEntry(ImGuiIO& io, RecentTitleDisplay& entry, size_t index);
   void LaunchTitle(const std::filesystem::path& path);
 
@@ -49,6 +50,7 @@ class RecentTitlesUI final : public ui::ImGuiDialog {
 
   char title_name_filter_[title_name_filter_size] = "";
   uint32_t selected_title_ = 0;
+  bool icons_loaded_ = false;
 
   EmulatorWindow* emulator_window_;
   std::vector<RecentTitleDisplay> recent_titles_;
