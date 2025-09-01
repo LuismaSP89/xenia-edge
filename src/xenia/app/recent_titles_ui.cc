@@ -120,11 +120,19 @@ void RecentTitlesUI::TryLoadIcons() {
   }
 
   if (!icon_data.empty() && imgui_drawer()) {
-    // Load icons individually
+    // Load icons individually with error handling
     for (const auto& [title_id, icon_data_entry] : icon_data) {
-      auto texture = imgui_drawer()->LoadImGuiIcon(icon_data_entry);
-      if (texture) {
-        title_icons_[title_id] = std::move(texture);
+      try {
+        auto texture = imgui_drawer()->LoadImGuiIcon(icon_data_entry);
+        if (texture) {
+          title_icons_[title_id] = std::move(texture);
+        }
+      } catch (const std::exception& e) {
+        XELOGE("Failed to load icon for title {}: {}", title_id, e.what());
+        // Continue with other icons
+      } catch (...) {
+        XELOGE("Failed to load icon for title {}: unknown error", title_id);
+        // Continue with other icons
       }
     }
   }
@@ -222,7 +230,19 @@ void RecentTitlesUI::LaunchTitle(const std::filesystem::path& path) {
 
 void RecentTitlesUI::OnDraw(ImGuiIO& io) {
   // Try to load icons if not already loaded - deferred from constructor
-  TryLoadIcons();
+  // Wrap in try-catch to prevent icon loading failures from breaking the entire
+  // dialog
+  try {
+    TryLoadIcons();
+  } catch (const std::exception& e) {
+    // Icon loading failed, but don't let it break the dialog
+    XELOGE("Failed to load game icons: {}", e.what());
+    icons_loaded_ = true;  // Prevent retrying every frame
+  } catch (...) {
+    // Unknown error, mark as loaded to prevent retrying
+    XELOGE("Failed to load game icons: unknown error");
+    icons_loaded_ = true;  // Prevent retrying every frame
+  }
 
   const auto window_position =
       ImVec2(GetIO().DisplaySize.x * 0.3f, GetIO().DisplaySize.y * 0.2f);
