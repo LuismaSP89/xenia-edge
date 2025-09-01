@@ -219,7 +219,6 @@ void PatchesDialog::OnDraw(ImGuiIO& io) {
                      filter_lower.begin(), ::tolower);
 
       bool title_matches = false;
-      bool has_patch_match = false;
 
       if (!filter_lower.empty()) {
         std::string title_lower = display.title_name;
@@ -229,6 +228,7 @@ void PatchesDialog::OnDraw(ImGuiIO& io) {
         title_matches = title_lower.find(filter_lower) != std::string::npos;
 
         if (!title_matches) {
+          bool has_patch_match = false;
           for (const auto& patch : display.patches) {
             std::string patch_lower = patch.name;
             std::transform(patch_lower.begin(), patch_lower.end(),
