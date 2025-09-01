@@ -507,15 +507,26 @@ bool EmulatorApp::OnInitialize() {
   emulator_ =
       std::make_unique<Emulator>("", storage_root, content_root, cache_root);
 
-  // Determine window size based on user setting.
-  auto res = xe::gpu::GraphicsSystem::GetInternalDisplayResolution();
-
   // Check if this is a game process (has target) or UI process
   bool is_game_process = !cvars::target.empty();
 
+  // Determine window size based on process type
+  uint32_t window_width, window_height;
+  if (is_game_process) {
+    // Game process - use full resolution from settings
+    auto res = xe::gpu::GraphicsSystem::GetInternalDisplayResolution();
+    window_width = res.first;
+    window_height = res.second;
+  } else {
+    // UI process - use smaller window since we won't render games here
+    window_width = 900;
+    window_height = 400;
+  }
+
   // Main emulator display window.
-  emulator_window_ = EmulatorWindow::Create(
-      emulator_.get(), app_context(), res.first, res.second, is_game_process);
+  emulator_window_ =
+      EmulatorWindow::Create(emulator_.get(), app_context(), window_width,
+                             window_height, is_game_process);
   if (!emulator_window_) {
     XELOGE("Failed to create the main emulator window");
     return false;
