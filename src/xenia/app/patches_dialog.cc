@@ -161,17 +161,25 @@ void PatchesDialog::OnDraw(ImGuiIO& io) {
     return;
   }
 
-  ImGui::SetNextWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowPos(ImVec2(100, 100), ImGuiCond_FirstUseEver);
+  // Set window size
+  ImVec2 window_size = ImVec2(800, 600);
+  ImGui::SetNextWindowSize(window_size, ImGuiCond_FirstUseEver);
+
+  // Center the window - calculate position based on viewport
+  ImVec2 viewport_size = ImGui::GetMainViewport()->Size;
+  ImVec2 window_pos = ImVec2((viewport_size.x - window_size.x) * 0.5f,
+                             (viewport_size.y - window_size.y) * 0.5f);
+  ImGui::SetNextWindowPos(window_pos, ImGuiCond_Always);
 
   bool window_open = true;
   if (!ImGui::Begin("Patch Manager", &window_open,
-                    ImGuiWindowFlags_NoCollapse)) {
+                    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove)) {
     ImGui::End();
     return;
   }
 
   if (!window_open) {
+    ImGui::End();
     Close();
     return;
   }
@@ -185,7 +193,7 @@ void PatchesDialog::OnDraw(ImGuiIO& io) {
   if (filter_text_.size() < 256) {
     filter_text_.resize(256);
   }
-  ImGui::InputTextWithHint("##filter", "Filter by title or patch name...",
+  ImGui::InputTextWithHint("##patch_filter", "Filter by title or patch name...",
                            filter_text_.data(), filter_text_.size());
 
   if (ImGui::Button("Refresh")) {
@@ -245,7 +253,7 @@ void PatchesDialog::OnDraw(ImGuiIO& io) {
         }
       }
 
-      ImGui::PushID(display.title_id);
+      ImGui::PushID(fmt::format("patch_game_{:08X}", display.title_id).c_str());
 
       // Auto-expand if filter is active and there are matches
       bool should_expand = !filter_lower.empty();
@@ -274,7 +282,7 @@ void PatchesDialog::OnDraw(ImGuiIO& io) {
             }
 
             visible_patches++;
-            ImGui::PushID(patch.id);
+            ImGui::PushID(fmt::format("patch_item_{}", patch.id).c_str());
 
             if (ImGui::Checkbox(patch.name.c_str(), &patch.is_enabled)) {
               XELOGI("Patch '{}' toggled to {}", patch.name, patch.is_enabled);
