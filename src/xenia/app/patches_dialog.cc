@@ -116,7 +116,6 @@ void PatchesDialog::SavePatchSettings() {
     std::filesystem::path patch_file_path =
         patches_directory_ / display.filename;
 
-    XELOGI("Saving to patch file: {}", patch_file_path.string());
 
     if (!std::filesystem::exists(patch_file_path)) {
       XELOGW("Patch file not found: {}", patch_file_path.string());
