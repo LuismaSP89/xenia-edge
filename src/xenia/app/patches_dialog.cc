@@ -151,7 +151,6 @@ void PatchesDialog::SavePatchSettings() {
         file.close();
         XELOGI("Saved patch settings for {:08X}", display.title_id);
       } else {
-        XELOGE("Failed to open patch file for writing: {}",
                patch_file_path.string());
       }
 
