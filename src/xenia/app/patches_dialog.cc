@@ -118,7 +118,6 @@ void PatchesDialog::SavePatchSettings() {
 
 
     if (!std::filesystem::exists(patch_file_path)) {
-      XELOGW("Patch file not found: {}", patch_file_path.string());
       continue;
     }
 
