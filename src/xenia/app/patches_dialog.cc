@@ -110,7 +110,6 @@ void PatchesDialog::LoadPatchFiles() {
 }
 
 void PatchesDialog::SavePatchSettings() {
-  XELOGI("SavePatchSettings called, saving {} displays",
          patch_displays_.size());
 
   for (auto& display : patch_displays_) {
