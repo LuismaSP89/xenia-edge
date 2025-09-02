@@ -47,7 +47,8 @@ class PatchesDialog final : public ui::ImGuiDialog {
   struct PatchDisplay {
     uint32_t title_id;
     std::string title_name;
-    std::string filename;  // Store the actual patch filename
+    std::string filename;
+    std::string version_info;
     std::vector<PatchInfo> patches;
     bool is_expanded = false;
   };

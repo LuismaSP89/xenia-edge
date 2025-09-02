@@ -66,6 +66,28 @@ void PatchesDialog::LoadPatchFiles() {
     display.title_id = patch_file.title_id;
     display.title_name = patch_file.title_name;
     display.filename = patch_file.filename;
+
+    // Extract version info from filename (e.g., "(TU3)" or mark as base)
+    size_t tu_pos = display.filename.find("(TU");
+    if (tu_pos != std::string::npos) {
+      size_t end_pos = display.filename.find(')', tu_pos);
+      if (end_pos != std::string::npos) {
+        display.version_info =
+            display.filename.substr(tu_pos + 1, end_pos - tu_pos - 1);
+      }
+    } else {
+      // Check if there are other versions with TU for this title
+      bool has_tu_versions = false;
+      for (const auto& other_patch : all_patches) {
+        if (other_patch.title_id == patch_file.title_id &&
+            other_patch.filename.find("(TU") != std::string::npos) {
+          has_tu_versions = true;
+          break;
+        }
+      }
+      display.version_info = has_tu_versions ? "Base" : "";
+    }
+
     display.is_expanded = false;
 
     for (size_t i = 0; i < patch_file.patch_info.size(); ++i) {
@@ -262,10 +284,16 @@ void PatchesDialog::OnDraw(ImGuiIO& io) {
         node_flags |= ImGuiTreeNodeFlags_DefaultOpen;
       }
 
-      if (ImGui::TreeNodeEx(
-              fmt::format("{} ({:08X})", display.title_name, display.title_id)
-                  .c_str(),
-              node_flags)) {
+      std::string tree_label;
+      if (!display.version_info.empty()) {
+        tree_label = fmt::format("{} [{}] ({:08X})", display.title_name,
+                                 display.version_info, display.title_id);
+      } else {
+        tree_label =
+            fmt::format("{} ({:08X})", display.title_name, display.title_id);
+      }
+
+      if (ImGui::TreeNodeEx(tree_label.c_str(), node_flags)) {
         if (!display.patches.empty()) {
           int visible_patches = 0;
           for (auto& patch : display.patches) {
