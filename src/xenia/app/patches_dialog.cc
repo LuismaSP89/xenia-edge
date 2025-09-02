@@ -59,7 +59,6 @@ void PatchesDialog::LoadPatchFiles() {
   }
 
   auto& all_patches = patch_db_->GetAllPatches();
-  XELOGI("Found {} patch files", all_patches.size());
 
   for (const auto& patch_file : all_patches) {
     PatchDisplay display;
