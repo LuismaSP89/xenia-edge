@@ -105,6 +105,7 @@ project("xenia-app")
       "xcb",
       "X11-xcb",
       "SDL2",
+      "curl",
     })
 
   filter("platforms:Windows")
@@ -114,6 +115,7 @@ project("xenia-app")
       "xenia-hid-winkey",
       "xenia-hid-xinput",
       "xenia-ui-d3d12",
+      "libcurl",
     })
 
   if enableMiscSubprojects then

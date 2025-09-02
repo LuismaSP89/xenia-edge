@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "xenia/app/patch_downloader.h"
 #include "xenia/patcher/patch_db.h"
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_drawer.h"
@@ -35,6 +36,7 @@ class PatchesDialog final : public ui::ImGuiDialog {
   void LoadPatchFiles();
   void SavePatchSettings();
   void ReloadPatchDatabase();
+  void StartPatchDownload();
 
   struct PatchInfo {
     uint32_t id;
@@ -57,8 +59,15 @@ class PatchesDialog final : public ui::ImGuiDialog {
   std::vector<PatchDisplay> patch_displays_;
   std::filesystem::path patches_directory_;
   std::unique_ptr<patcher::PatchDB> patch_db_;
+  std::unique_ptr<PatchDownloader> patch_downloader_;
   bool needs_reload_ = false;
   std::string filter_text_;
+
+  // Download state
+  bool is_downloading_ = false;
+  size_t download_current_ = 0;
+  size_t download_total_ = 0;
+  std::string download_status_;
 };
 
 }  // namespace app

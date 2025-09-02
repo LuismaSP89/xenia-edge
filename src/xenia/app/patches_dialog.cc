@@ -38,6 +38,7 @@ PatchesDialog::PatchesDialog(ui::ImGuiDrawer* imgui_drawer,
   if (emulator) {
     patches_directory_ = emulator->storage_root() / "patches";
     patch_db_ = std::make_unique<patcher::PatchDB>(emulator->storage_root());
+    patch_downloader_ = std::make_unique<PatchDownloader>();
     LoadPatchFiles();
   }
 }
@@ -177,6 +178,43 @@ void PatchesDialog::ReloadPatchDatabase() {
   }
 }
 
+void PatchesDialog::StartPatchDownload() {
+  if (!patch_downloader_ || is_downloading_) {
+    return;
+  }
+
+  is_downloading_ = true;
+  download_current_ = 0;
+  download_total_ = 0;
+  download_status_ = "Fetching patch list...";
+
+  // Create patches directory if it doesn't exist
+  if (!std::filesystem::exists(patches_directory_)) {
+    std::filesystem::create_directories(patches_directory_);
+  }
+
+  patch_downloader_->DownloadAllPatches(
+      patches_directory_,
+      [this](size_t current, size_t total) {
+        // Progress callback - runs in background thread
+        download_current_ = current;
+        download_total_ = total;
+      },
+      [this](bool success, const std::string& error) {
+        // Completion callback - runs in background thread
+        is_downloading_ = false;
+        if (success) {
+          download_status_ = "Download completed! Refreshing patch list...";
+          // Reload patches after download
+          LoadPatchFiles();
+          // Clear the status message after reloading
+          download_status_ = "Download completed!";
+        } else {
+          download_status_ = "Download failed: " + error;
+        }
+      });
+}
+
 void PatchesDialog::OnDraw(ImGuiIO& io) {
   if (!emulator_window_->emulator()) {
     ImGui::Text("Emulator not initialized");
@@ -228,6 +266,24 @@ void PatchesDialog::OnDraw(ImGuiIO& io) {
       std::filesystem::create_directories(patches_directory_);
     }
     LaunchFileExplorer(patches_directory_);
+  }
+
+  ImGui::SameLine();
+  if (is_downloading_) {
+    ImGui::BeginDisabled();
+    ImGui::Button("Download Patches");
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::Text("Downloading: %zu/%zu", download_current_, download_total_);
+  } else {
+    if (ImGui::Button("Download Patches")) {
+      StartPatchDownload();
+    }
+  }
+
+  if (!download_status_.empty()) {
+    ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%s",
+                       download_status_.c_str());
   }
 
   ImGui::Separator();
