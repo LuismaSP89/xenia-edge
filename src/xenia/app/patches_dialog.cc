@@ -102,6 +102,12 @@ void PatchesDialog::LoadPatchFiles() {
 
     patch_displays_.push_back(std::move(display));
   }
+
+  // Sort patch displays alphabetically by title name
+  std::sort(patch_displays_.begin(), patch_displays_.end(),
+            [](const PatchDisplay& a, const PatchDisplay& b) {
+              return a.title_name < b.title_name;
+            });
 }
 
 void PatchesDialog::SavePatchSettings() {
