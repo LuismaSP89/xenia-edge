@@ -129,7 +129,10 @@ filter({"platforms:Linux", "toolset:gcc"})
 
 filter({"platforms:Linux", "language:C++", "toolset:clang"})
   disablewarnings({
-    "deprecated-register"
+    "deprecated-register",
+    "deprecated-literal-operator",  -- Needed for fmt library with clang 20+
+    "nontrivial-memcall",
+    "integer-overflow"  -- Needed for cxxopts with clang 20+
   })
 filter({"platforms:Linux", "language:C++", "toolset:clang", "files:*.cc or *.cpp"})
   buildoptions({
