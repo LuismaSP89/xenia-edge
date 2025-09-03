@@ -2,7 +2,7 @@
  ******************************************************************************
  * Xenia : Xbox 360 Emulator Research Project                                 *
  ******************************************************************************
- * Copyright 2024 Xenia Canary. All rights reserved.                          *
+ * Copyright 2025 Xenia Canary. All rights reserved.                          *
  * Released under the BSD license - see LICENSE in the root for more details. *
  ******************************************************************************
  */
@@ -33,11 +33,6 @@ class PatchesDialog final : public ui::ImGuiDialog {
   void OnDraw(ImGuiIO& io) override;
 
  private:
-  void LoadPatchFiles();
-  void SavePatchSettings();
-  void ReloadPatchDatabase();
-  void StartPatchDownload();
-
   struct PatchInfo {
     uint32_t id;
     std::string name;
@@ -46,18 +41,27 @@ class PatchesDialog final : public ui::ImGuiDialog {
     bool is_enabled;
   };
 
-  struct PatchDisplay {
+  struct TitlePatchData {
     uint32_t title_id;
     std::string title_name;
     std::string filename;
     std::string version_info;
+    std::vector<uint64_t> hashes;
     std::vector<PatchInfo> patches;
     bool is_expanded = false;
   };
 
+  void LoadPatchFiles();
+  void SavePatchSettings();
+  void SaveSinglePatchFile(TitlePatchData& patch_data);
+  void ReloadPatchDatabase();
+  void StartPatchDownload();
+  std::string ExtractVersionInfo(const std::string& filename,
+                                 uint32_t title_id) const;
+
   EmulatorWindow* emulator_window_;
-  std::vector<PatchDisplay> patch_displays_;
   std::filesystem::path patches_directory_;
+  std::vector<TitlePatchData> title_patches_;
   std::unique_ptr<patcher::PatchDB> patch_db_;
   std::unique_ptr<PatchDownloader> patch_downloader_;
   bool needs_reload_ = false;
