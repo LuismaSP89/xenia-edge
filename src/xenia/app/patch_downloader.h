@@ -10,9 +10,12 @@
 #ifndef XENIA_APP_PATCH_DOWNLOADER_H_
 #define XENIA_APP_PATCH_DOWNLOADER_H_
 
+#include <atomic>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace xe {
@@ -34,33 +37,28 @@ class PatchDownloader {
   PatchDownloader();
   ~PatchDownloader();
 
-  // Fetch list of available patches from GitHub
-  void FetchAvailablePatches(
-      std::function<void(const std::vector<PatchFileInfo>&)> callback);
-
-  // Download a specific patch file
-  void DownloadPatch(const PatchFileInfo& patch_info,
-                     const std::filesystem::path& destination,
-                     ProgressCallback progress_callback,
-                     CompletionCallback completion_callback);
-
-  // Download all patches
+  // Download all patches (fetches list and downloads in parallel batches)
   void DownloadAllPatches(const std::filesystem::path& destination_dir,
+                          const std::unordered_map<std::string, size_t>& existing_files,
                           ProgressCallback progress_callback,
                           CompletionCallback completion_callback);
+  
+  // Cancel any ongoing download
+  void CancelDownload();
 
  private:
   static constexpr const char* kGitHubApiUrl =
       "https://api.github.com/repos/xenia-canary/game-patches/contents/patches";
-  static constexpr const char* kGitHubRawUrl =
-      "https://raw.githubusercontent.com/xenia-canary/game-patches/main/"
-      "patches/";
 
-  // Platform-specific HTTP request implementation
+  // HTTP request implementation
   bool HttpGet(const std::string& url, std::string& response);
-  bool HttpDownloadFile(const std::string& url,
-                        const std::filesystem::path& destination,
-                        ProgressCallback progress_callback);
+  
+  // Merge downloaded patches with existing file
+  bool MergePatchFile(const std::filesystem::path& existing_path,
+                     const std::string& new_content);
+  
+  std::future<void> download_task_;
+  std::atomic<bool> cancel_requested_{false};
 };
 
 }  // namespace app

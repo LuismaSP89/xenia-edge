@@ -45,9 +45,9 @@ class PatchesDialog final : public ui::ImGuiDialog {
     uint32_t title_id;
     std::string title_name;
     std::string filename;
-    std::string version_info;
     std::vector<uint64_t> hashes;
     std::vector<PatchInfo> patches;
+    size_t file_size = 0;
     bool is_expanded = false;
   };
 
@@ -56,8 +56,6 @@ class PatchesDialog final : public ui::ImGuiDialog {
   void SaveSinglePatchFile(TitlePatchData& patch_data);
   void ReloadPatchDatabase();
   void StartPatchDownload();
-  std::string ExtractVersionInfo(const std::string& filename,
-                                 uint32_t title_id) const;
 
   EmulatorWindow* emulator_window_;
   std::filesystem::path patches_directory_;

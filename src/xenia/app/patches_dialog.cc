@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <unordered_map>
+#include <vector>
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "third_party/imgui/imgui.h"
@@ -59,9 +61,12 @@ void PatchesDialog::LoadPatchFiles() {
     data.title_name = patch_file.title_name;
     data.filename = patch_file.filename;
     data.hashes = patch_file.hashes;
-    data.version_info =
-        ExtractVersionInfo(patch_file.filename, patch_file.title_id);
     data.is_expanded = false;
+    
+    auto patch_file_path = patches_directory_ / patch_file.filename;
+    if (std::filesystem::exists(patch_file_path)) {
+      data.file_size = std::filesystem::file_size(patch_file_path);
+    }
 
     for (size_t i = 0; i < patch_file.patch_info.size(); ++i) {
       PatchInfo info;
@@ -81,31 +86,6 @@ void PatchesDialog::LoadPatchFiles() {
             [](const TitlePatchData& a, const TitlePatchData& b) {
               return a.title_name < b.title_name;
             });
-}
-
-std::string PatchesDialog::ExtractVersionInfo(const std::string& filename,
-                                              uint32_t title_id) const {
-  // Extract version info from filename (e.g., "(TU3)" or mark as base)
-  size_t tu_pos = filename.find("(TU");
-  if (tu_pos != std::string::npos) {
-    size_t end_pos = filename.find(')', tu_pos);
-    if (end_pos != std::string::npos) {
-      return filename.substr(tu_pos + 1, end_pos - tu_pos - 1);
-    }
-  } else {
-    // Check if there are other versions with TU for this title
-    auto& all_patches = patch_db_->GetAllPatches();
-    bool has_tu_versions = false;
-    for (const auto& other_patch : all_patches) {
-      if (other_patch.title_id == title_id &&
-          other_patch.filename.find("(TU") != std::string::npos) {
-        has_tu_versions = true;
-        break;
-      }
-    }
-    return has_tu_versions ? "Base" : "";
-  }
-  return "";
 }
 
 void PatchesDialog::SaveSinglePatchFile(TitlePatchData& patch_data) {
@@ -140,14 +120,8 @@ void PatchesDialog::SaveSinglePatchFile(TitlePatchData& patch_data) {
     if (file.is_open()) {
       file << config;
       file.close();
-      if (!patch_data.version_info.empty()) {
-        XELOGI("Saved patch settings for {} [{}] ({:08X})",
-               patch_data.title_name, patch_data.version_info,
-               patch_data.title_id);
-      } else {
-        XELOGI("Saved patch settings for {} ({:08X})", patch_data.title_name,
-               patch_data.title_id);
-      }
+      XELOGI("Saved patch settings for {} ({:08X})", patch_data.filename,
+             patch_data.title_id);
     }
 
   } catch (const toml::parse_error& err) {
@@ -182,31 +156,39 @@ void PatchesDialog::StartPatchDownload() {
   is_downloading_ = true;
   download_current_ = 0;
   download_total_ = 0;
-  download_status_ = "Fetching patch list...";
+  download_status_ = "Downloading patches from GitHub...";
 
   // Create patches directory if it doesn't exist
   if (!std::filesystem::exists(patches_directory_)) {
     std::filesystem::create_directories(patches_directory_);
   }
 
+  // Build map of existing files
+  std::unordered_map<std::string, size_t> existing_files;
+  for (const auto& patch : title_patches_) {
+    if (patch.file_size > 0) {
+      existing_files[patch.filename] = patch.file_size;
+    }
+  }
+  
   patch_downloader_->DownloadAllPatches(
       patches_directory_,
+      existing_files,
       [this](size_t current, size_t total) {
         // Progress callback - runs in background thread
         download_current_ = current;
         download_total_ = total;
+        if (total > 0) {
+          download_status_ = fmt::format("Processing patches... {}/{}", current, total);
+        }
       },
-      [this](bool success, const std::string& error) {
+      [this](bool success, const std::string& status) {
         // Completion callback - runs in background thread
         is_downloading_ = false;
+        download_status_ = status;
         if (success) {
-          download_status_ = "Download completed! Refreshing patch list...";
           // Reload patches after download
-          LoadPatchFiles();
-          // Clear the status message after reloading
-          download_status_ = "Download completed!";
-        } else {
-          download_status_ = "Download failed: " + error;
+          ReloadPatchDatabase();
         }
       });
 }
@@ -256,17 +238,12 @@ void PatchesDialog::OnDraw(ImGuiIO& io) {
     ImGui::SetKeyboardFocusHere();
   }
 
-  ImGui::InputTextWithHint("##patch_filter", "Filter by title or patch name...",
-                           filter_text_.data(), filter_text_.size());
-
-  // Add clear button
-  ImGui::SameLine();
-  if (ImGui::Button("X")) {
-    filter_text_[0] = '\0';
-  }
-  if (ImGui::IsItemHovered()) {
-    ImGui::SetTooltip("Clear filter");
-  }
+  ImGui::SetNextItemWidth(-1);  // Use full width
+  ImGui::InputTextWithHint(
+      "##patch_filter",
+      "Filter by title, media ID, or patch name... (Esc to clear)",
+      filter_text_.data(), filter_text_.size(),
+      ImGuiInputTextFlags_EscapeClearsAll);
 
   if (ImGui::Button("Open Patches Directory")) {
     if (!std::filesystem::exists(patches_directory_)) {
@@ -307,34 +284,60 @@ void PatchesDialog::OnDraw(ImGuiIO& io) {
     ImGui::BeginChild("PatchList", ImVec2(0, -30), true);
 
     for (auto& patch_data : title_patches_) {
+      // Parse filter into tokens for fuzzy search
       std::string filter_lower(filter_text_.data());
       std::transform(filter_lower.begin(), filter_lower.end(),
                      filter_lower.begin(), ::tolower);
 
-      bool title_matches = false;
-
+      std::vector<std::string> filter_tokens;
       if (!filter_lower.empty()) {
-        std::string title_lower = patch_data.title_name;
-        std::transform(title_lower.begin(), title_lower.end(),
-                       title_lower.begin(), ::tolower);
+        std::string current_token;
+        for (char c : filter_lower) {
+          if (c == ' ' && !current_token.empty()) {
+            filter_tokens.push_back(current_token);
+            current_token.clear();
+          } else if (c != ' ') {
+            current_token += c;
+          }
+        }
+        if (!current_token.empty()) {
+          filter_tokens.push_back(current_token);
+        }
+      }
 
-        title_matches = title_lower.find(filter_lower) != std::string::npos;
+      // Check if any patches match the filter
+      if (!filter_tokens.empty()) {
+        bool has_visible_patches = false;
+        // Create base searchable text for this game (title + filename)
+        std::string base_search_text =
+            patch_data.title_name + " " + patch_data.filename;
+        std::transform(base_search_text.begin(), base_search_text.end(),
+                       base_search_text.begin(), ::tolower);
 
-        if (!title_matches) {
-          bool has_patch_match = false;
-          for (const auto& patch : patch_data.patches) {
-            std::string patch_lower = patch.name;
-            std::transform(patch_lower.begin(), patch_lower.end(),
-                           patch_lower.begin(), ::tolower);
-            if (patch_lower.find(filter_lower) != std::string::npos) {
-              has_patch_match = true;
+        for (const auto& patch : patch_data.patches) {
+          // Create combined searchable text for each patch
+          std::string patch_search_text = base_search_text + " " + patch.name;
+          std::transform(patch_search_text.begin(), patch_search_text.end(),
+                         patch_search_text.begin(), ::tolower);
+
+          // Check if all filter tokens match
+          bool all_tokens_match = true;
+          for (const auto& token : filter_tokens) {
+            if (patch_search_text.find(token) == std::string::npos) {
+              all_tokens_match = false;
               break;
             }
           }
 
-          if (!has_patch_match) {
-            continue;  // Skip this game entirely
+          if (all_tokens_match) {
+            has_visible_patches = true;
+            break;
           }
+        }
+
+        // Skip this game if no patches match
+        if (!has_visible_patches) {
+          continue;
         }
       }
 
@@ -352,28 +355,54 @@ void PatchesDialog::OnDraw(ImGuiIO& io) {
         node_flags |= ImGuiTreeNodeFlags_DefaultOpen;
       }
 
-      std::string tree_label;
-      if (!patch_data.version_info.empty()) {
-        tree_label = fmt::format("{} [{}] ({:08X})", patch_data.title_name,
-                                 patch_data.version_info, patch_data.title_id);
-      } else {
-        tree_label = fmt::format("{} ({:08X})", patch_data.title_name,
-                                 patch_data.title_id);
+      // Remove .patch.toml extension for display
+      std::string display_name = patch_data.filename;
+      const std::string patch_toml_ext = ".patch.toml";
+      const std::string toml_ext = ".toml";
+
+      if (display_name.size() > patch_toml_ext.size() &&
+          display_name.substr(display_name.size() - patch_toml_ext.size()) ==
+              patch_toml_ext) {
+        display_name.resize(display_name.size() - patch_toml_ext.size());
+      } else if (display_name.size() > toml_ext.size() &&
+                 display_name.substr(display_name.size() - toml_ext.size()) ==
+                     toml_ext) {
+        display_name.resize(display_name.size() - toml_ext.size());
       }
 
-      if (ImGui::TreeNodeEx(tree_label.c_str(), node_flags)) {
+      if (ImGui::TreeNodeEx(display_name.c_str(), node_flags)) {
         if (!patch_data.patches.empty()) {
           int visible_patches = 0;
+
+          // Prepare base searchable text if filtering
+          std::string base_search_text;
+          if (!filter_tokens.empty()) {
+            base_search_text =
+                patch_data.title_name + " " + patch_data.filename;
+            std::transform(base_search_text.begin(), base_search_text.end(),
+                           base_search_text.begin(), ::tolower);
+          }
+
           for (auto& patch : patch_data.patches) {
-            // Only filter individual patches if:
-            // - There's a filter active
-            // - The game title doesn't match (so we need to filter patches)
-            if (!filter_lower.empty() && !title_matches) {
-              std::string patch_lower = patch.name;
-              std::transform(patch_lower.begin(), patch_lower.end(),
-                             patch_lower.begin(), ::tolower);
-              if (patch_lower.find(filter_lower) == std::string::npos) {
-                continue;  // Skip this patch if it doesn't match the filter
+            // Filter individual patches if there's an active filter
+            if (!filter_tokens.empty()) {
+              // Create combined searchable text for this patch
+              std::string patch_search_text =
+                  base_search_text + " " + patch.name;
+              std::transform(patch_search_text.begin(), patch_search_text.end(),
+                             patch_search_text.begin(), ::tolower);
+
+              // Check if all filter tokens match
+              bool all_tokens_match = true;
+              for (const auto& token : filter_tokens) {
+                if (patch_search_text.find(token) == std::string::npos) {
+                  all_tokens_match = false;
+                  break;
+                }
+              }
+
+              if (!all_tokens_match) {
+                continue;  // Skip this patch if not all tokens match
               }
             }
 
