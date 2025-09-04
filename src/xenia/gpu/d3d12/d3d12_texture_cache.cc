@@ -397,6 +397,8 @@ D3D12TextureCache::D3D12TextureCache(const RegisterFile& register_file,
                                      bool bindless_resources_used)
     : TextureCache(register_file, shared_memory, draw_resolution_scale_x,
                    draw_resolution_scale_y),
+      ScaledResolveBufferManager(draw_resolution_scale_x,
+                                draw_resolution_scale_y),
       command_processor_(command_processor),
       bindless_resources_used_(bindless_resources_used) {}
 
@@ -729,7 +731,7 @@ void D3D12TextureCache::BeginSubmission(uint64_t new_submission_index) {
 
   // ExecuteCommandLists is a full UAV and aliasing barrier.
   if (IsDrawResolutionScaled()) {
-    size_t scaled_resolve_buffer_count = GetScaledResolveBufferCount();
+    size_t scaled_resolve_buffer_count = GetBufferCount();
     for (size_t i = 0; i < scaled_resolve_buffer_count; ++i) {
       ScaledResolveVirtualBuffer* scaled_resolve_buffer =
           scaled_resolve_2gb_buffers_[i].get();
@@ -1183,9 +1185,9 @@ bool D3D12TextureCache::EnsureScaledResolveMemoryCommitted(
   // addresses before creating the heaps so when creating a new buffer, it can
   // be safely assumed that no existing heaps should be mapped to it.
   std::array<size_t, 2> possible_buffers_first =
-      GetPossibleScaledResolveBufferIndices(first_scaled);
+      GetPossibleBufferIndices(first_scaled);
   std::array<size_t, 2> possible_buffers_last =
-      GetPossibleScaledResolveBufferIndices(last_scaled);
+      GetPossibleBufferIndices(last_scaled);
   size_t possible_buffer_first =
       std::min(possible_buffers_first[0], possible_buffers_first[1]);
   size_t possible_buffer_last =
@@ -1259,7 +1261,7 @@ bool D3D12TextureCache::EnsureScaledResolveMemoryCommitted(
     UINT range_tile_count =
         kScaledResolveHeapSize / D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES;
     std::array<size_t, 2> buffer_indices =
-        GetPossibleScaledResolveBufferIndices(uint64_t(i)
+        GetPossibleBufferIndices(uint64_t(i)
                                               << kScaledResolveHeapSizeLog2);
     for (size_t j = 0; j < 2; ++j) {
       size_t buffer_index = buffer_indices[j];
@@ -1306,9 +1308,9 @@ bool D3D12TextureCache::MakeScaledResolveRangeCurrent(
 
   // Get one or two buffers that can hold the whole range.
   std::array<size_t, 2> possible_buffer_indices_first =
-      GetPossibleScaledResolveBufferIndices(start_scaled);
+      GetPossibleBufferIndices(start_scaled);
   std::array<size_t, 2> possible_buffer_indices_last =
-      GetPossibleScaledResolveBufferIndices(last_scaled);
+      GetPossibleBufferIndices(last_scaled);
   size_t possible_buffer_indices_common[2];
   size_t possible_buffer_indices_common_count = 0;
   for (size_t i = 0; i <= size_t(possible_buffer_indices_first[0] !=

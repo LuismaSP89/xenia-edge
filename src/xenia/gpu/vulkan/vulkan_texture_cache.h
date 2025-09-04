@@ -27,7 +27,8 @@ namespace vulkan {
 
 class VulkanCommandProcessor;
 
-class VulkanTextureCache final : public TextureCache {
+class VulkanTextureCache final : public TextureCache,
+                                 public ScaledResolveBufferManager {
  public:
   // Sampler parameters that can be directly converted to a host sampler or used
   // for checking whether samplers bindings are up to date.
@@ -122,12 +123,19 @@ class VulkanTextureCache final : public TextureCache {
                                  xenos::TextureFormat& format_out);
 
   // Scaled resolve buffer management (for use by VulkanRenderTargetCache)
+  // Uses sparse binding with overlapping windows similar to D3D12
   struct ScaledResolveBuffer {
     VkBuffer buffer = VK_NULL_HANDLE;
-    VmaAllocation allocation = VK_NULL_HANDLE;
-    uint64_t size = 0;
-    uint64_t range_start_scaled = 0;
-    uint64_t range_length_scaled = 0;
+    // Each buffer is 2GB and uses sparse binding
+    // Heaps are allocated in smaller chunks (16MB) and bound to the buffer
+    struct Heap {
+      VkDeviceMemory memory = VK_NULL_HANDLE;
+      uint32_t bind_offset = 0;  // Offset in the buffer where this is bound
+    };
+    std::vector<Heap> heaps;
+    // Buffer index in the sliding window (0 = 0-2GB, 1 = 1-3GB, etc.)
+    size_t buffer_index = 0;
+    bool is_sparse = false;
   };
 
   // Public scaled resolve buffer methods for use by VulkanRenderTargetCache
@@ -391,6 +399,12 @@ class VulkanTextureCache final : public TextureCache {
       samplers_;
   std::pair<const SamplerParameters, Sampler>* sampler_used_first_ = nullptr;
   std::pair<const SamplerParameters, Sampler>* sampler_used_last_ = nullptr;
+
+  // Sparse binding support methods for scaled resolve buffers
+  bool CreateScaledResolveBufferSparse(size_t buffer_index);
+  bool BindScaledResolveBufferMemory(size_t buffer_index, 
+                                     uint64_t offset_in_buffer, 
+                                     uint64_t size);
 
   // Scaled resolve buffer storage
   std::vector<ScaledResolveBuffer> scaled_resolve_buffers_;

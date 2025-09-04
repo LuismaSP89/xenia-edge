@@ -33,7 +33,8 @@ namespace d3d12 {
 
 class D3D12CommandProcessor;
 
-class D3D12TextureCache final : public TextureCache {
+class D3D12TextureCache final : public TextureCache,
+                                public ScaledResolveBufferManager {
  public:
   // Keys that can be stored for checking validity whether descriptors for host
   // shader bindings are up to date.
@@ -415,43 +416,6 @@ class D3D12TextureCache final : public TextureCache {
   void ReleaseTextureDescriptor(uint32_t descriptor_index);
   D3D12_CPU_DESCRIPTOR_HANDLE GetTextureDescriptorCPUHandle(
       uint32_t descriptor_index) const;
-
-  size_t GetScaledResolveBufferCount() const {
-    assert_true(IsDrawResolutionScaled());
-    // Make sure any range up to 1 GB is accessible through 1 or 2 buffers.
-    // 2x2 scale buffers - just one 2 GB buffer for all 2 GB.
-    // 3x3 scale buffers - 4 buffers:
-    //  +0.0 +0.5 +1.0 +1.5 +2.0 +2.5 +3.0 +3.5 +4.0 +4.5
-    // |___________________|___________________|
-    //           |___________________|______________|
-    // Buffer N has an offset of N * 1 GB in the scaled resolve address space.
-    // The logic is:
-    // - 2 GB can be accessed through a [0 GB ... 2 GB) buffer - only need one.
-    // - 2.1 GB needs [0 GB ... 2 GB) and [1 GB ... 2.1 GB) - two buffers.
-    // - 3 GB needs [0 GB ... 2 GB) and [1 GB ... 3 GB) - two buffers.
-    // - 3.1 GB needs [0 GB ... 2 GB), [1 GB ... 3 GB) and [2 GB ... 3.1 GB) -
-    //   three buffers.
-    uint64_t address_space_size =
-        uint64_t(SharedMemory::kBufferSize) *
-        (draw_resolution_scale_x() * draw_resolution_scale_y());
-    return size_t((address_space_size - 1) >> 30);
-  }
-  // Returns indices of two scaled resolve virtual buffers that the location in
-  // memory may be accessible through. May be the same if it's a location near
-  // the beginning or the end of the address represented only by one buffer.
-  std::array<size_t, 2> GetPossibleScaledResolveBufferIndices(
-      uint64_t address_scaled) const {
-    assert_true(IsDrawResolutionScaled());
-    size_t address_gb = size_t(address_scaled >> 30);
-    size_t max_index = GetScaledResolveBufferCount() - 1;
-    // In different cases for 3x3:
-    //  +0.0 +0.5 +1.0 +1.5 +2.0 +2.5 +3.0 +3.5 +4.0 +4.5
-    // |12________2________|1_________2________|
-    //           |1_________2________|1_________12__|
-    return std::array<size_t, 2>{
-        std::min(address_gb, max_index),
-        std::min(std::max(address_gb, size_t(1)) - size_t(1), max_index)};
-  }
   // The index is also the gigabyte offset of the buffer from the start of the
   // scaled physical memory address space.
   size_t GetCurrentScaledResolveBufferIndex() const {

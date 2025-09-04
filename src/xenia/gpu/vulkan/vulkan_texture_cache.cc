@@ -1777,6 +1777,8 @@ VulkanTextureCache::VulkanTextureCache(
     VkPipelineStageFlags guest_shader_pipeline_stages)
     : TextureCache(register_file, shared_memory, draw_resolution_scale_x,
                    draw_resolution_scale_y),
+      ScaledResolveBufferManager(draw_resolution_scale_x,
+                                draw_resolution_scale_y),
       command_processor_(command_processor),
       guest_shader_pipeline_stages_(guest_shader_pipeline_stages) {}
 
@@ -2757,33 +2759,38 @@ bool VulkanTextureCache::EnsureScaledResolveMemoryCommitted(
        length_scaled_alignment_bits) &
       ~length_scaled_alignment_bits;
 
-  // Check if any existing buffer covers this range
-
-  bool range_covered = false;
-  for (const ScaledResolveBuffer& buffer : scaled_resolve_buffers_) {
-    if (buffer.range_start_scaled <= start_scaled &&
-        (buffer.range_start_scaled + buffer.range_length_scaled) >=
-            (start_scaled + length_scaled)) {
-      // This buffer covers the requested range
-      scaled_resolve_current_range_start_scaled_ = buffer.range_start_scaled;
-      scaled_resolve_current_range_length_scaled_ = buffer.range_length_scaled;
-      range_covered = true;
-      break;
-    }
+  // Use the base class to determine which buffer(s) can contain this range
+  size_t buffer_index = GetBufferIndexForRange(start_scaled, length_scaled);
+  
+  // Check if the buffer can fully contain the range
+  if (!CanBufferContainRange(buffer_index, start_scaled, length_scaled)) {
+    XELOGE("VulkanTextureCache: Range too large for a single buffer");
+    return false;
   }
 
-  if (!range_covered) {
-    // Need to create a new buffer or extend an existing one
-    // For simplicity and to avoid fragmentation, we'll use a fixed-size buffer
-    // approach similar to D3D12 (but smaller - 256MB chunks instead of 2GB)
-    constexpr uint64_t kBufferSize = 256 * 1024 * 1024;  // 256MB per buffer
+  // Ensure we have enough buffers allocated
+  if (scaled_resolve_buffers_.size() <= buffer_index) {
+    scaled_resolve_buffers_.resize(buffer_index + 1);
+  }
 
-    // Round up the range to cover complete buffer chunks
-    uint64_t buffer_start = (start_scaled / kBufferSize) * kBufferSize;
-    uint64_t buffer_end =
-        ((start_scaled + length_scaled + kBufferSize - 1) / kBufferSize) *
-        kBufferSize;
-    uint64_t buffer_size = buffer_end - buffer_start;
+  // Check if buffer at this index is already created
+  ScaledResolveBuffer& buffer = scaled_resolve_buffers_[buffer_index];
+  if (buffer.buffer == VK_NULL_HANDLE) {
+    // Create a sparse buffer with 2GB size
+    const ui::vulkan::VulkanDevice* device = command_processor_.GetVulkanDevice();
+    
+    // Check for sparse binding support
+    if (!device->device_features().sparseBinding ||
+        device->queue_family_sparse_binding() == UINT32_MAX) {
+      // Fallback to non-sparse buffers if sparse binding is not supported
+      // Create a regular buffer (simplified for now)
+      VkBufferCreateInfo buffer_info = {};
+      buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      buffer_info.size = ScaledResolveBufferManager::kBufferSize;
+      buffer_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                         VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+      buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     // Check again if this expanded range is covered
     bool expanded_range_covered = false;

@@ -28,6 +28,74 @@
 namespace xe {
 namespace gpu {
 
+// Manages scaled resolve buffers with overlapping windows for efficient access
+// to resolution-scaled textures and resolve targets.
+// Based on D3D12's sliding window approach: buffers overlap by half their size
+// to ensure any contiguous range up to half the buffer size is always fully
+// contained in at least one buffer.
+class ScaledResolveBufferManager {
+ public:
+  // 2GB windows with 1GB overlap for efficient access patterns
+  static constexpr uint64_t kBufferSize = UINT64_C(2) << 30;  // 2GB
+  static constexpr uint32_t kBufferSizeLog2 = 31;
+  static constexpr uint64_t kBufferOverlap = UINT64_C(1) << 30;  // 1GB
+  
+  ScaledResolveBufferManager(uint32_t draw_resolution_scale_x,
+                             uint32_t draw_resolution_scale_y)
+      : draw_resolution_scale_x_(draw_resolution_scale_x),
+        draw_resolution_scale_y_(draw_resolution_scale_y) {}
+  
+  virtual ~ScaledResolveBufferManager() = default;
+  
+  // Returns the number of buffers needed for the scaled address space.
+  // For 2x2: 1 buffer (2GB space fits in one 2GB buffer)
+  // For 3x3: 4 buffers with overlapping coverage
+  size_t GetBufferCount() const {
+    uint64_t address_space_size =
+        uint64_t(SharedMemory::kBufferSize) *
+        (draw_resolution_scale_x_ * draw_resolution_scale_y_);
+    // Each buffer covers 1GB uniquely, with 1GB overlap with neighbors
+    return size_t((address_space_size - 1) >> 30);
+  }
+  
+  // Returns indices of two buffers that can access the given scaled address.
+  // May return the same index twice if the address is only covered by one buffer.
+  std::array<size_t, 2> GetPossibleBufferIndices(uint64_t address_scaled) const {
+    size_t address_gb = size_t(address_scaled >> 30);
+    size_t max_index = GetBufferCount() - 1;
+    // Buffer N starts at N GB and extends to (N+2) GB
+    // Address at X GB can be accessed through buffers [X-1, X] (clamped to valid range)
+    return std::array<size_t, 2>{
+        std::min(address_gb, max_index),
+        std::min(std::max(address_gb, size_t(1)) - size_t(1), max_index)};
+  }
+  
+  // Returns the buffer index that starts at or before the given address
+  size_t GetBufferIndexForRange(uint64_t start_scaled, uint64_t length_scaled) const {
+    // Choose the buffer where this range starts
+    return std::min(size_t(start_scaled >> 30), GetBufferCount() - 1);
+  }
+  
+  // Calculates offset within a specific buffer for a scaled address
+  uint64_t GetBufferRelativeOffset(size_t buffer_index, uint64_t address_scaled) const {
+    // Buffer N starts at N GB in the scaled address space
+    uint64_t buffer_start = uint64_t(buffer_index) << 30;
+    return address_scaled - buffer_start;
+  }
+  
+  // Checks if a range can be fully contained in the buffer at the given index
+  bool CanBufferContainRange(size_t buffer_index, uint64_t start_scaled,
+                             uint64_t length_scaled) const {
+    uint64_t buffer_start = uint64_t(buffer_index) << 30;
+    uint64_t range_start_in_buffer = start_scaled - buffer_start;
+    return range_start_in_buffer + length_scaled <= kBufferSize;
+  }
+  
+ protected:
+  uint32_t draw_resolution_scale_x_;
+  uint32_t draw_resolution_scale_y_;
+};
+
 // Manages host copies of guest textures, performing untiling, format and endian
 // conversion of textures stored in the shared memory, and also handling
 // invalidation.
