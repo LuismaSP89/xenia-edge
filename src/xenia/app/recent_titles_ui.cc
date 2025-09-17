@@ -140,6 +140,23 @@ void RecentTitlesUI::TryLoadIcons() {
   icons_loaded_ = true;
 }
 
+void RecentTitlesUI::RefreshIcons() {
+  // Clear existing icons and force reload
+  for (auto& entry : title_icons_) {
+    entry.second.release();
+  }
+  title_icons_.clear();
+
+  // Reset the title IDs to force re-matching
+  for (auto& title : recent_titles_) {
+    title.title_id = 0;
+    title.icon.clear();
+  }
+
+  // Force reload on next draw
+  icons_loaded_ = false;
+}
+
 void RecentTitlesUI::DrawTitleEntry(ImGuiIO& io, RecentTitleDisplay& entry,
                                     size_t index) {
   const auto start_position = ImGui::GetCursorPos();
@@ -152,7 +169,38 @@ void RecentTitlesUI::DrawTitleEntry(ImGuiIO& io, RecentTitleDisplay& entry,
     ImGui::Image(reinterpret_cast<ImTextureID>(icon_it->second.get()),
                  ui::default_image_icon_size);
   } else {
-    ImGui::Dummy(ui::default_image_icon_size);
+    if (!has_logged_in_profile_) {
+      // Show "Not logged in" text when no profile is logged in
+      ImVec2 pos = ImGui::GetCursorPos();
+
+      // Create a child region to contain the text within icon bounds
+      ImGui::BeginChild(fmt::format("##NoIcon{}", index).c_str(),
+                        ui::default_image_icon_size, false,
+                        ImGuiWindowFlags_NoScrollbar);
+
+      // Draw each line centered individually
+      const char* lines[] = {"Not", "logged", "in"};
+      float line_height = ImGui::GetTextLineHeight();
+      float total_height = line_height * 3;
+      float start_y = (ui::default_image_icon_size.y - total_height) * 0.5f;
+
+      ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+
+      for (int i = 0; i < 3; i++) {
+        ImVec2 line_size = ImGui::CalcTextSize(lines[i]);
+        float x_pos = (ui::default_image_icon_size.x - line_size.x) * 0.5f;
+        float y_pos = start_y + (i * line_height);
+        ImGui::SetCursorPos(ImVec2(x_pos, y_pos));
+        ImGui::TextUnformatted(lines[i]);
+      }
+
+      ImGui::PopStyleColor();
+
+      ImGui::EndChild();
+    } else {
+      // Just show empty space if logged in but no icon found
+      ImGui::Dummy(ui::default_image_icon_size);
+    }
   }
 
   // Second Column - Title Info
@@ -229,6 +277,38 @@ void RecentTitlesUI::LaunchTitle(const std::filesystem::path& path) {
 }
 
 void RecentTitlesUI::OnDraw(ImGuiIO& io) {
+  // Check if the number of logged-in profiles has changed
+  has_logged_in_profile_ = false;
+  if (emulator_window_ && emulator_window_->emulator()) {
+    auto kernel_state = emulator_window_->emulator()->kernel_state();
+    if (kernel_state) {
+      auto xam_state = kernel_state->xam_state();
+      if (xam_state) {
+        auto profile_manager = xam_state->profile_manager();
+        if (profile_manager) {
+          // Count currently logged-in profiles
+          int current_logged_in_count = 0;
+          for (uint8_t i = 0; i < 4; i++) {
+            if (profile_manager->GetProfile(i)) {
+              current_logged_in_count++;
+              has_logged_in_profile_ = true;
+            }
+          }
+
+          // If the count changed, refresh icons
+          if (current_logged_in_count != last_logged_in_count_) {
+            XELOGI("Logged-in profile count changed from {} to {}, refreshing icons",
+                   last_logged_in_count_, current_logged_in_count);
+            last_logged_in_count_ = current_logged_in_count;
+
+            // Refresh icons when profiles change (login or logout)
+            RefreshIcons();
+          }
+        }
+      }
+    }
+  }
+
   // Try to load icons if not already loaded - deferred from constructor
   // Wrap in try-catch to prevent icon loading failures from breaking the entire
   // dialog

@@ -46,11 +46,16 @@ class RecentTitlesUI final : public ui::ImGuiDialog {
   void DrawTitleEntry(ImGuiIO& io, RecentTitleDisplay& entry, size_t index);
   void LaunchTitle(const std::filesystem::path& path);
 
+ public:
+  void RefreshIcons();  // Call this when a user logs in
+
   static constexpr uint8_t title_name_filter_size = 15;
 
   char title_name_filter_[title_name_filter_size] = "";
   uint32_t selected_title_ = 0;
   bool icons_loaded_ = false;
+  int last_logged_in_count_ = 0;  // Track number of logged-in profiles
+  bool has_logged_in_profile_ = false;  // Cache login status for current frame
 
   EmulatorWindow* emulator_window_;
   std::vector<RecentTitleDisplay> recent_titles_;
