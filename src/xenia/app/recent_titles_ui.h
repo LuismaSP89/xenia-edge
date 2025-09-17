@@ -54,7 +54,7 @@ class RecentTitlesUI final : public ui::ImGuiDialog {
   char title_name_filter_[title_name_filter_size] = "";
   uint32_t selected_title_ = 0;
   bool icons_loaded_ = false;
-  int last_logged_in_count_ = 0;  // Track number of logged-in profiles
+  int last_logged_in_count_ = 0;        // Track number of logged-in profiles
   bool has_logged_in_profile_ = false;  // Cache login status for current frame
 
   EmulatorWindow* emulator_window_;

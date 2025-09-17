@@ -159,10 +159,9 @@ void RecentTitlesUI::RefreshIcons() {
 
 void RecentTitlesUI::DrawTitleEntry(ImGuiIO& io, RecentTitleDisplay& entry,
                                     size_t index) {
-  const auto start_position = ImGui::GetCursorPos();
-
   // First Column - Icon
   ImGui::TableSetColumnIndex(0);
+  const auto start_position = ImGui::GetCursorPos();
 
   auto icon_it = title_icons_.find(entry.title_id);
   if (icon_it != title_icons_.end() && icon_it->second) {
@@ -184,7 +183,8 @@ void RecentTitlesUI::DrawTitleEntry(ImGuiIO& io, RecentTitleDisplay& entry,
       float total_height = line_height * 3;
       float start_y = (ui::default_image_icon_size.y - total_height) * 0.5f;
 
-      ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+      ImGui::PushStyleColor(ImGuiCol_Text,
+                            ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
 
       for (int i = 0; i < 3; i++) {
         ImVec2 line_size = ImGui::CalcTextSize(lines[i]);
@@ -205,14 +205,36 @@ void RecentTitlesUI::DrawTitleEntry(ImGuiIO& io, RecentTitleDisplay& entry,
 
   // Second Column - Title Info
   ImGui::TableNextColumn();
+
+  // Use full width of the column for text
+  float column_width = ImGui::GetContentRegionAvail().x;
+
   ImGui::PushFont(imgui_drawer()->GetTitleFont());
   ImGui::TextUnformatted(entry.title_name.c_str());
   ImGui::PopFont();
 
-  // Show file path
+  // Show file path - use more available width now
   std::string display_path = entry.path_to_file.string();
-  if (display_path.length() > 60) {
-    display_path = "..." + display_path.substr(display_path.length() - 57);
+  float text_width = ImGui::CalcTextSize(display_path.c_str()).x;
+
+  // Only truncate if path is too long for the column
+  if (text_width > column_width) {
+    // Calculate how many characters we can fit
+    std::string ellipsis = "...";
+    float ellipsis_width = ImGui::CalcTextSize(ellipsis.c_str()).x;
+    float available_width = column_width - ellipsis_width;
+
+    // Binary search for the right substring length
+    size_t path_len = display_path.length();
+    size_t keep_chars = path_len;
+    for (size_t i = path_len; i > 0; i--) {
+      std::string test_path = display_path.substr(path_len - i);
+      if (ImGui::CalcTextSize(test_path.c_str()).x <= available_width) {
+        keep_chars = i;
+        break;
+      }
+    }
+    display_path = ellipsis + display_path.substr(path_len - keep_chars);
   }
   ImGui::TextUnformatted(display_path.c_str());
 
@@ -229,19 +251,15 @@ void RecentTitlesUI::DrawTitleEntry(ImGuiIO& io, RecentTitleDisplay& entry,
     ImGui::TextUnformatted("Last played: Unknown");
   }
 
-  ImGui::TableNextColumn();
-
-  const ImVec2 end_draw_position =
-      ImVec2(ImGui::GetCursorPos().x - start_position.x,
-             ImGui::GetCursorPos().y - start_position.y);
-
+  // Create invisible selectable over the entire row
   ImGui::SetCursorPos(start_position);
 
   // Use index for unique ID instead of title_id which might be 0
   if (ImGui::Selectable(fmt::format("##RecentTitle{}Selectable", index).c_str(),
                         selected_title_ == entry.title_id,
-                        ImGuiSelectableFlags_SpanAllColumns,
-                        end_draw_position)) {
+                        ImGuiSelectableFlags_SpanAllColumns |
+                            ImGuiSelectableFlags_AllowOverlap,
+                        ImVec2(0, ui::default_image_icon_size.y))) {
     selected_title_ = entry.title_id;
     LaunchTitle(entry.path_to_file);
   }
@@ -297,8 +315,10 @@ void RecentTitlesUI::OnDraw(ImGuiIO& io) {
 
           // If the count changed, refresh icons
           if (current_logged_in_count != last_logged_in_count_) {
-            XELOGI("Logged-in profile count changed from {} to {}, refreshing icons",
-                   last_logged_in_count_, current_logged_in_count);
+            XELOGI(
+                "Logged-in profile count changed from {} to {}, refreshing "
+                "icons",
+                last_logged_in_count_, current_logged_in_count);
             last_logged_in_count_ = current_logged_in_count;
 
             // Refresh icons when profiles change (login or logout)
@@ -324,21 +344,15 @@ void RecentTitlesUI::OnDraw(ImGuiIO& io) {
     icons_loaded_ = true;  // Prevent retrying every frame
   }
 
-  const auto window_position =
-      ImVec2(GetIO().DisplaySize.x * 0.3f, GetIO().DisplaySize.y * 0.2f);
+  // Make the window take up the entire visible area
+  ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImGui::GetMainViewport()->Size, ImGuiCond_Always);
+  ImGui::SetNextWindowBgAlpha(1.0f);
 
-  ImGui::SetNextWindowPos(window_position, ImGuiCond_FirstUseEver);
-  const auto xenia_window_size = ImGui::GetMainViewport()->Size;
-
-  ImGui::SetNextWindowSizeConstraints(
-      ImVec2(xenia_window_size.x * 0.3f, xenia_window_size.y * 0.2f),
-      ImVec2(xenia_window_size.x * 0.5f, xenia_window_size.y * 0.6f));
-  ImGui::SetNextWindowBgAlpha(0.9f);
-
-  if (!ImGui::Begin("Recently Played Games", nullptr,
-                    ImGuiWindowFlags_NoCollapse |
-                        ImGuiWindowFlags_AlwaysAutoResize |
-                        ImGuiWindowFlags_HorizontalScrollbar)) {
+  if (!ImGui::Begin("##RecentlyPlayedGames", nullptr,
+                    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                        ImGuiWindowFlags_NoBringToFrontOnFocus)) {
     ImGui::End();
     return;
   }
@@ -351,9 +365,16 @@ void RecentTitlesUI::OnDraw(ImGuiIO& io) {
       ImGui::Separator();
     }
 
-    if (ImGui::BeginTable("", 2, ImGuiTableFlags_BordersInnerH)) {
-      ImGui::TableNextRow(0, ui::default_image_icon_size.y);
+    if (ImGui::BeginTable(
+            "", 2, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_PadOuterX)) {
+      // Set the icon column to fixed width (icon + small padding)
+      ImGui::TableSetupColumn("Icon", ImGuiTableColumnFlags_WidthFixed,
+                              ui::default_image_icon_size.x + 10.0f);
+      // The details column takes the remaining space
+      ImGui::TableSetupColumn("Details", ImGuiTableColumnFlags_WidthStretch);
+
       size_t display_index = 0;
+      bool first_item = true;
       for (auto& entry : recent_titles_) {
         std::string filter(title_name_filter_);
         if (!filter.empty()) {
@@ -367,7 +388,10 @@ void RecentTitlesUI::OnDraw(ImGuiIO& io) {
             continue;
           }
         }
+        // Add row with vertical padding
+        ImGui::TableNextRow(0, ui::default_image_icon_size.y + 4.0f);
         DrawTitleEntry(io, entry, display_index++);
+        first_item = false;
       }
       ImGui::EndTable();
     }

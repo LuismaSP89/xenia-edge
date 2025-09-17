@@ -519,8 +519,8 @@ bool EmulatorApp::OnInitialize() {
     window_height = res.second;
   } else {
     // UI process - use smaller window since we won't render games here
-    window_width = 900;
-    window_height = 400;
+    window_width = 820;
+    window_height = 440;
   }
 
   // Main emulator display window.

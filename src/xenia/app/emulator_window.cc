@@ -430,9 +430,9 @@ void EmulatorWindow::DisplayConfigDialog::OnDraw(ImGuiIO& io) {
   ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowSize(ImVec2(20, 20), ImGuiCond_FirstUseEver);
   // Alpha from Dear ImGui tooltips (0.35 from the overlay provides too low
-  // visibility). Translucent so some effect of the changes can still be seen
-  // through it.
-  ImGui::SetNextWindowBgAlpha(0.6f);
+  // visibility). Slightly translucent so some effect of the changes can still
+  // be seen through it, but more opaque for better readability.
+  ImGui::SetNextWindowBgAlpha(0.85f);
   bool dialog_open = true;
   if (!ImGui::Begin("Post-processing", &dialog_open,
                     ImGuiWindowFlags_NoCollapse |
