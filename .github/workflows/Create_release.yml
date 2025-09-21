@@ -17,21 +17,21 @@ jobs:
     steps:
       #- uses: actions/checkout@main
       #  with:
-      #    repository: ${{ github.repository_owner }}/xenia-canary-releases
+      #    repository: ${{ github.repository_owner }}/xenia-edge-releases
       - uses: actions/download-artifact@main
       - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          GH_REPO: ${{ github.repository_owner }}/xenia-canary-releases
+          GH_REPO: ${{ github.repository }}
           notes: ${{ github.event.head_commit.message }}
         run: |
           case ${{ inputs.os }} in
             windows)
-              asset=xenia_canary_${{ inputs.os }}.zip
+              asset=xenia_edge_${{ inputs.os }}.zip
               7z a $asset -xr!'*.pdb' -mx9 -bb3
               ;;
             linux)
-              asset=xenia_canary_${{ inputs.os }}.tar.xz
+              asset=xenia_edge_${{ inputs.os }}.tar.xz
               ;;
           esac
           if [ ! -f $asset ]; then
