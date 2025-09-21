@@ -55,4 +55,5 @@ jobs:
             fi
           }
           tag=edge-${GITHUB_SHA::7}
-          create_or_edit_release $tag "Xenia Edge - ${tag}"
+          title="Xenia Edge - ${tag}"
+          create_or_edit_release "$tag" "$title"
