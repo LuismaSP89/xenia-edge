@@ -25,15 +25,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           notes: ${{ github.event.head_commit.message }}
         run: |
-          case ${{ inputs.os }} in
-            windows)
-              asset=xenia_edge_${{ inputs.os }}.zip
-              7z a $asset -xr!'*.pdb' -mx9 -bb3
-              ;;
-            linux)
-              asset=xenia_edge_${{ inputs.os }}.tar.xz
-              ;;
-          esac
+          asset=xenia_edge_${{ inputs.os }}.zip
           if [ ! -f $asset ]; then
             ls -R
             echo "::error::$asset doesn't exist!"
@@ -44,6 +36,7 @@ jobs:
             echo "::error::$asset is too small!"
             exit 1
           fi
+          7z a $asset -xr!'*.pdb' -mx9 -bb3
           create_or_edit_release() {
             local tag=$1
             local title=$2
