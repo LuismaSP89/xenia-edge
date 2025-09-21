@@ -54,6 +54,5 @@ jobs:
               gh release create $tag $asset --target $GITHUB_SHA -t $title -n "$notes"
             fi
           }
-          tag=edge-${GITHUB_SHA::7}
-          title="Xenia Edge - ${tag}"
-          create_or_edit_release "$tag" "$title"
+          tag=${GITHUB_SHA::7}
+          create_or_edit_release $tag ${tag}_$GITHUB_REF_NAME
