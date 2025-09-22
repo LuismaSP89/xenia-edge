@@ -66,3 +66,10 @@ DEFINE_int32(
     "Set to higher number than query_occlusion_sample_lower_threshold. This "
     "value is ignored if query_occlusion_sample_lower_threshold is set to -1.",
     "GPU");
+
+DEFINE_bool(
+    spirv_optimize, true,
+    "Enable SPIR-V shader optimization if SPIRV-Tools is available. "
+    "Optimization significantly improves GPU performance but may increase "
+    "shader compilation time.",
+    "GPU");
