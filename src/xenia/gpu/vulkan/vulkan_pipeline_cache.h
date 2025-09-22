@@ -78,11 +78,18 @@ class VulkanPipelineCache {
   bool Initialize();
   void Shutdown();
 
+  void InitializeShaderStorage(const std::filesystem::path& cache_root,
+                               uint32_t title_id, bool blocking);
+  void ShutdownShaderStorage();
+
   void EndSubmission();
   bool IsCreatingPipelines();
 
   VulkanShader* LoadShader(xenos::ShaderType shader_type,
                            const uint32_t* host_address, uint32_t dword_count);
+  VulkanShader* LoadShader(xenos::ShaderType shader_type,
+                           const uint32_t* host_address, uint32_t dword_count,
+                           uint64_t data_hash);
   // Analyze shader microcode on the translator thread.
   void AnalyzeShaderUcode(Shader& shader) {
     shader.AnalyzeUcode(ucode_disasm_buffer_);
@@ -164,6 +171,8 @@ class VulkanPipelineCache {
   });
 
   XEPACKEDSTRUCT(PipelineDescription, {
+    static constexpr uint32_t kVersion = 1;
+
     uint64_t vertex_shader_hash;
     uint64_t vertex_shader_modification;
     // 0 if no pixel shader.
@@ -349,6 +358,34 @@ class VulkanPipelineCache {
   std::condition_variable creation_request_cond_;
   std::unique_ptr<xe::threading::Event> creation_completion_event_ = nullptr;
   bool creation_completion_set_event_ = false;
+
+  // For persistent storage.
+  void StorageWriteThread();
+  std::filesystem::path shader_storage_cache_root_;
+  uint32_t shader_storage_title_id_ = 0;
+  // Current file open for writing shaders to.
+  FILE* shader_storage_file_ = nullptr;
+  // Whether the shader storage file needs to be flushed to disk.
+  bool shader_storage_file_flush_needed_ = false;
+  // Unique index of the current shader storage file, to check if a shader is
+  // already in it.
+  uint32_t shader_storage_index_ = 0;
+  // Current file open for writing pipeline descriptions to.
+  FILE* pipeline_storage_file_ = nullptr;
+  // Whether the pipeline storage file needs to be flushed to disk.
+  bool pipeline_storage_file_flush_needed_ = false;
+  std::unique_ptr<xe::threading::Thread> storage_write_thread_;
+  std::atomic<bool> storage_write_thread_shutdown_{false};
+  std::deque<const Shader*> storage_write_shader_queue_;
+  struct PipelineStoredDescription {
+    uint64_t description_hash;
+    PipelineDescription description;
+  };
+  std::deque<PipelineStoredDescription> storage_write_pipeline_queue_;
+  xe_mutex storage_write_request_lock_;
+  std::condition_variable storage_write_request_cond_;
+  bool storage_write_flush_shaders_ = false;
+  bool storage_write_flush_pipelines_ = false;
 };
 
 }  // namespace vulkan
