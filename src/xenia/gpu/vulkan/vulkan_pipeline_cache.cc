@@ -337,11 +337,6 @@ bool VulkanPipelineCache::ConfigurePipeline(
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
 
-  // Ensure shaders are translated - needed now for GetCurrentStateDescription.
-  if (!EnsureShadersTranslated(vertex_shader, pixel_shader)) {
-    return false;
-  }
-
   PipelineDescription description;
   if (!GetCurrentStateDescription(
           vertex_shader, pixel_shader, primitive_processing_result,
@@ -490,7 +485,12 @@ void VulkanPipelineCache::CreationThread() {
       ++creation_threads_busy_;
     }
 
-    EnsurePipelineCreated(creation_arguments);
+    if (!EnsureShadersTranslated(creation_arguments.vertex_shader,
+                                 creation_arguments.pixel_shader)) {
+      // TODO(Triang3l): Mark as failed.
+    } else {
+      EnsurePipelineCreated(creation_arguments);
+    }
 
     {
       std::lock_guard<xe_mutex> lock(creation_request_lock_);

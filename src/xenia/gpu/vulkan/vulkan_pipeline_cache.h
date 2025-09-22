@@ -223,8 +223,8 @@ class VulkanPipelineCache {
   // creation threads, with everything needed from caches pre-looked-up.
   struct PipelineCreationArguments {
     std::pair<const PipelineDescription, Pipeline>* pipeline;
-    const VulkanShader::VulkanTranslation* vertex_shader;
-    const VulkanShader::VulkanTranslation* pixel_shader;
+    VulkanShader::VulkanTranslation* vertex_shader;
+    VulkanShader::VulkanTranslation* pixel_shader;
     VkShaderModule geometry_shader;
     VkRenderPass render_pass;
   };
