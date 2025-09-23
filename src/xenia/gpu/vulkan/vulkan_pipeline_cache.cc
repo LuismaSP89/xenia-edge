@@ -12,6 +12,13 @@
 #include <cstdint>
 #include <cstring>
 
+#include "xenia/base/platform.h"
+#if XE_PLATFORM_WIN32
+#include <io.h>  // for _commit
+#elif XE_PLATFORM_LINUX
+#include <unistd.h>  // for fsync
+#endif
+
 #include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/logging.h"
@@ -42,6 +49,17 @@ DEFINE_int32(
 namespace xe {
 namespace gpu {
 namespace vulkan {
+
+namespace {
+// Platform-specific file sync helper
+inline void SyncFile(FILE* file) {
+#if XE_PLATFORM_WIN32
+  _commit(_fileno(file));
+#elif XE_PLATFORM_LINUX
+  fsync(fileno(file));
+#endif
+}
+}  // namespace
 
 struct ShaderStoredHeader {
   static constexpr uint32_t kVersion = 1;
@@ -355,13 +373,22 @@ void VulkanPipelineCache::InitializeShaderStorage(
     }
     xe::filesystem::TruncateStdioFile(shader_storage_file_,
                                       shader_storage_valid_bytes);
+    // Ensure truncation is persisted to disk in case of crash
+    fflush(shader_storage_file_);
+    SyncFile(shader_storage_file_);
   } else {
     xe::filesystem::TruncateStdioFile(shader_storage_file_, 0);
+    // Ensure truncation is persisted before writing new header
+    fflush(shader_storage_file_);
+    SyncFile(shader_storage_file_);
     shader_storage_file_header.magic = shader_storage_magic;
     shader_storage_file_header.version_swapped =
         xe::byte_swap(ShaderStoredHeader::kVersion);
     fwrite(&shader_storage_file_header, sizeof(shader_storage_file_header), 1,
            shader_storage_file_);
+    // Ensure header is persisted
+    fflush(shader_storage_file_);
+    SyncFile(shader_storage_file_);
   }
 
   // Translate all the needed shaders.
@@ -395,6 +422,9 @@ void VulkanPipelineCache::InitializeShaderStorage(
         uint64_t(sizeof(pipeline_storage_file_header) +
                  sizeof(PipelineStoredDescription) *
                      pipeline_stored_descriptions.size()));
+    // Ensure truncation is persisted to disk in case of crash
+    fflush(pipeline_storage_file_);
+    SyncFile(pipeline_storage_file_);
   }
 
   shader_storage_cache_root_ = cache_root;
@@ -855,9 +885,17 @@ void VulkanPipelineCache::CreationThread() {
 
     if (!EnsureShadersTranslated(creation_arguments.vertex_shader,
                                  creation_arguments.pixel_shader)) {
-      // TODO(Triang3l): Mark as failed.
+      // Mark pipeline as failed so we don't keep retrying
+      creation_arguments.pipeline->second.pipeline.store(
+          reinterpret_cast<VkPipeline>(Pipeline::kFailedSentinel),
+          std::memory_order_release);
     } else {
-      EnsurePipelineCreated(creation_arguments);
+      if (!EnsurePipelineCreated(creation_arguments)) {
+        // Also mark as failed if pipeline creation itself fails
+        creation_arguments.pipeline->second.pipeline.store(
+            reinterpret_cast<VkPipeline>(Pipeline::kFailedSentinel),
+            std::memory_order_release);
+      }
     }
 
     {

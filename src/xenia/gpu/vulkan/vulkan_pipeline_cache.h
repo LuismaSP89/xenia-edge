@@ -59,6 +59,9 @@ class VulkanPipelineCache {
   };
 
   struct Pipeline {
+    // Special sentinel value to indicate failed pipeline creation
+    static constexpr uintptr_t kFailedSentinel = ~uintptr_t(0);
+
     std::atomic<VkPipeline> pipeline{VK_NULL_HANDLE};
     // The layouts are owned by the VulkanCommandProcessor, and must not be
     // destroyed by it while the pipeline cache is active.

@@ -2411,10 +2411,18 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     // Pipeline is not ready yet - wait for it to be created.
     pipeline_cache_->EndSubmission();
     current_pipeline = pipeline->pipeline.load(std::memory_order_acquire);
-    if (current_pipeline == VK_NULL_HANDLE) {
-      // Still not ready - something is wrong.
+    if (current_pipeline == VK_NULL_HANDLE ||
+        current_pipeline ==
+            reinterpret_cast<VkPipeline>(
+                VulkanPipelineCache::Pipeline::kFailedSentinel)) {
+      // Still not ready or failed to create - cannot draw.
       return false;
     }
+  } else if (current_pipeline ==
+             reinterpret_cast<VkPipeline>(
+                 VulkanPipelineCache::Pipeline::kFailedSentinel)) {
+    // Pipeline creation failed previously - cannot draw.
+    return false;
   }
 
   // Update the textures before most other work in the submission because
