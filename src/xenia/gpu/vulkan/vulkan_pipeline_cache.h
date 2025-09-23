@@ -371,8 +371,8 @@ class VulkanPipelineCache {
   std::vector<std::unique_ptr<xe::threading::Thread>> creation_threads_;
   std::atomic<bool> creation_threads_shutdown_{false};
   std::atomic<size_t> creation_threads_busy_{0};
-  // TODO(Triang3l): The queue should contain Pipeline objects directly, not
-  // pointers to pairs in the map, to support eviction.
+  // Queue contains pointers to map entries. Pipelines are never evicted as
+  // games have a finite set that should all remain cached for performance.
   std::deque<PipelineCreationArguments> creation_queue_;
   xe_mutex creation_request_lock_;
   std::condition_variable creation_request_cond_;
