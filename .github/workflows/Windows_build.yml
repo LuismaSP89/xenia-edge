@@ -83,6 +83,17 @@ jobs:
       - uses: actions/checkout@main
         with:
           fetch-depth: 0
+      - name: Restore file modification times
+        uses: chetan/git-restore-mtime-action@v1
+
+      - name: Cache build directory
+        uses: actions/cache@v3
+        with:
+          path: build
+          key: build-windows-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            build-windows-${{ github.ref }}-
+
       - name: Cache Vulkan SDK
         id: cache-vulkan-sdk
         uses: actions/cache@v3
