@@ -107,7 +107,8 @@ jobs:
             echo "Warning: spirv-opt.exe not found at expected location"
           }
 
-          if (${{ steps.cache-submodules.outputs.cache-hit }} != 'true') {
+          $cacheHit = '${{ steps.cache-submodules.outputs.cache-hit }}'
+          if ($cacheHit -ne 'true') {
             git submodule update --init --depth=1 -j $env:NUMBER_OF_PROCESSORS (Select-String -CaseSensitive '(?<=path = )(?!third_party\/(FidelityFX-(CAS|FSR)|premake-(androidndk|cmake|export-compile-commands))).+' .gitmodules).Matches.Value
           }
       - name: Cache build output
