@@ -374,7 +374,7 @@ class VulkanPipelineCache {
   // Queue contains pointers to map entries. Pipelines are never evicted as
   // games have a finite set that should all remain cached for performance.
   std::deque<PipelineCreationArguments> creation_queue_;
-  xe_mutex creation_request_lock_;
+  std::mutex creation_request_lock_;
   std::condition_variable creation_request_cond_;
   std::unique_ptr<xe::threading::Event> creation_completion_event_ = nullptr;
   bool creation_completion_set_event_ = false;
@@ -402,7 +402,7 @@ class VulkanPipelineCache {
     PipelineDescription description;
   };
   std::deque<PipelineStoredDescription> storage_write_pipeline_queue_;
-  xe_mutex storage_write_request_lock_;
+  std::mutex storage_write_request_lock_;
   std::condition_variable storage_write_request_cond_;
   bool storage_write_flush_shaders_ = false;
   bool storage_write_flush_pipelines_ = false;

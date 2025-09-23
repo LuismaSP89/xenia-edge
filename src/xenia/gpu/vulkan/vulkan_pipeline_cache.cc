@@ -157,7 +157,7 @@ void VulkanPipelineCache::Shutdown() {
   // creating them.
   if (!creation_threads_.empty()) {
     {
-      std::lock_guard<xe_mutex> lock(creation_request_lock_);
+      std::lock_guard<std::mutex> lock(creation_request_lock_);
       creation_threads_shutdown_.store(true, std::memory_order_release);
     }
     creation_request_cond_.notify_all();
@@ -227,7 +227,7 @@ void VulkanPipelineCache::InitializeShaderStorage(
 void VulkanPipelineCache::ShutdownShaderStorage() {
   if (storage_write_thread_) {
     {
-      std::lock_guard<xe_mutex> lock(storage_write_request_lock_);
+      std::lock_guard<std::mutex> lock(storage_write_request_lock_);
       storage_write_thread_shutdown_.store(true, std::memory_order_release);
     }
     storage_write_request_cond_.notify_all();
@@ -258,7 +258,7 @@ void VulkanPipelineCache::StorageWriteThread() {
     bool shutdown = false;
 
     {
-      std::unique_lock<xe_mutex> lock(storage_write_request_lock_);
+      std::unique_lock<std::mutex> lock(storage_write_request_lock_);
       storage_write_request_cond_.wait(lock, [this]() {
         return storage_write_thread_shutdown_.load(std::memory_order_acquire) ||
                !storage_write_shader_queue_.empty() ||
@@ -524,7 +524,7 @@ bool VulkanPipelineCache::ConfigurePipeline(
     assert_not_null(storage_write_thread_);
     pipeline_storage_file_flush_needed_ = true;
     {
-      std::lock_guard<xe_mutex> lock(storage_write_request_lock_);
+      std::lock_guard<std::mutex> lock(storage_write_request_lock_);
       storage_write_pipeline_queue_.emplace_back();
       PipelineStoredDescription& stored_description =
           storage_write_pipeline_queue_.back();
@@ -537,7 +537,7 @@ bool VulkanPipelineCache::ConfigurePipeline(
   if (!creation_threads_.empty()) {
     // Submit the pipeline for creation to any available thread.
     {
-      std::lock_guard<xe_mutex> lock(creation_request_lock_);
+      std::lock_guard<std::mutex> lock(creation_request_lock_);
       creation_queue_.emplace_back();
       PipelineCreationArguments& creation_arguments = creation_queue_.back();
       creation_arguments.pipeline = &pipeline_pair;
@@ -576,7 +576,7 @@ void VulkanPipelineCache::EndSubmission() {
   // Await creation of all queued pipelines.
   bool await_creation_completion_event;
   {
-    std::lock_guard<xe_mutex> lock(creation_request_lock_);
+    std::lock_guard<std::mutex> lock(creation_request_lock_);
     // Assuming the creation queue is already empty (because the processor
     // thread also worked on creating the leftover pipelines), so only check
     // if there are threads with pipelines currently being created.
@@ -597,7 +597,7 @@ bool VulkanPipelineCache::IsCreatingPipelines() {
   if (creation_threads_.empty()) {
     return false;
   }
-  std::lock_guard<xe_mutex> lock(creation_request_lock_);
+  std::lock_guard<std::mutex> lock(creation_request_lock_);
   return !creation_queue_.empty() || creation_threads_busy_ != 0;
 }
 
@@ -605,7 +605,7 @@ void VulkanPipelineCache::CreationThread() {
   for (;;) {
     PipelineCreationArguments creation_arguments;
     {
-      std::unique_lock<xe_mutex> lock(creation_request_lock_);
+      std::unique_lock<std::mutex> lock(creation_request_lock_);
       creation_request_cond_.wait(lock, [this]() {
         return !creation_queue_.empty() ||
                creation_threads_shutdown_.load(std::memory_order_acquire);
@@ -634,7 +634,7 @@ void VulkanPipelineCache::CreationThread() {
     }
 
     {
-      std::lock_guard<xe_mutex> lock(creation_request_lock_);
+      std::lock_guard<std::mutex> lock(creation_request_lock_);
       --creation_threads_busy_;
       if (creation_completion_set_event_ && creation_threads_busy_ == 0 &&
           creation_queue_.empty()) {
