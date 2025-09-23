@@ -147,7 +147,7 @@ bool VulkanPipelineCache::Initialize() {
           std::min(uint32_t(cvars::vulkan_pipeline_creation_threads),
                    logical_processor_count);
     }
-    creation_threads_shutdown_ = false;
+    creation_threads_shutdown_.store(false, std::memory_order_release);
     for (size_t i = 0; i < creation_thread_count; ++i) {
       std::unique_ptr<xe::threading::Thread> creation_thread =
           xe::threading::Thread::Create({}, [this]() { CreationThread(); });
@@ -168,7 +168,7 @@ void VulkanPipelineCache::Shutdown() {
   if (!creation_threads_.empty()) {
     {
       std::lock_guard<xe_mutex> lock(creation_request_lock_);
-      creation_threads_shutdown_ = true;
+      creation_threads_shutdown_.store(true, std::memory_order_release);
     }
     creation_request_cond_.notify_all();
     for (size_t i = 0; i < creation_threads_.size(); ++i) {
@@ -440,7 +440,7 @@ void VulkanPipelineCache::ShutdownShaderStorage() {
   if (storage_write_thread_) {
     {
       std::lock_guard<xe_mutex> lock(storage_write_request_lock_);
-      storage_write_thread_shutdown_ = true;
+      storage_write_thread_shutdown_.store(true, std::memory_order_release);
     }
     storage_write_request_cond_.notify_all();
     xe::threading::Wait(storage_write_thread_.get(), false);
@@ -476,12 +476,12 @@ void VulkanPipelineCache::StorageWriteThread() {
     {
       std::unique_lock<xe_mutex> lock(storage_write_request_lock_);
       storage_write_request_cond_.wait(lock, [this]() {
-        return storage_write_thread_shutdown_ ||
+        return storage_write_thread_shutdown_.load(std::memory_order_acquire) ||
                !storage_write_shader_queue_.empty() ||
                !storage_write_pipeline_queue_.empty() ||
                storage_write_flush_shaders_ || storage_write_flush_pipelines_;
       });
-      shutdown = storage_write_thread_shutdown_;
+      shutdown = storage_write_thread_shutdown_.load(std::memory_order_acquire);
       std::swap(shader_queue, storage_write_shader_queue_);
       std::swap(pipeline_queue, storage_write_pipeline_queue_);
       if (storage_write_flush_shaders_) {
@@ -873,9 +873,10 @@ void VulkanPipelineCache::CreationThread() {
     {
       std::unique_lock<xe_mutex> lock(creation_request_lock_);
       creation_request_cond_.wait(lock, [this]() {
-        return !creation_queue_.empty() || creation_threads_shutdown_;
+        return !creation_queue_.empty() ||
+               creation_threads_shutdown_.load(std::memory_order_acquire);
       });
-      if (creation_threads_shutdown_) {
+      if (creation_threads_shutdown_.load(std::memory_order_acquire)) {
         break;
       }
       creation_arguments = creation_queue_.front();
