@@ -2695,7 +2695,8 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
     } */
     return false;
   }
-  creation_arguments.pipeline->second.pipeline = pipeline;
+  creation_arguments.pipeline->second.pipeline.store(pipeline,
+                                                     std::memory_order_release);
   return true;
 }
 

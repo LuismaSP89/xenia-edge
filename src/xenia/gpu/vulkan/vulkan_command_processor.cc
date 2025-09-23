@@ -2405,10 +2405,13 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     return false;
   }
 
-  if (pipeline->pipeline == VK_NULL_HANDLE) {
+  VkPipeline current_pipeline =
+      pipeline->pipeline.load(std::memory_order_acquire);
+  if (current_pipeline == VK_NULL_HANDLE) {
     // Pipeline is not ready yet - wait for it to be created.
     pipeline_cache_->EndSubmission();
-    if (pipeline->pipeline == VK_NULL_HANDLE) {
+    current_pipeline = pipeline->pipeline.load(std::memory_order_acquire);
+    if (current_pipeline == VK_NULL_HANDLE) {
       // Still not ready - something is wrong.
       return false;
     }
@@ -2430,10 +2433,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // The pipeline may be not ready yet if created asynchronously.
   // EndSubmission must be called before submitting the command buffer to
   // await its creation.
-  if (current_guest_graphics_pipeline_ != pipeline->pipeline) {
+  if (current_guest_graphics_pipeline_ != current_pipeline) {
     deferred_command_buffer_.CmdVkBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                               pipeline->pipeline);
-    current_guest_graphics_pipeline_ = pipeline->pipeline;
+                                               current_pipeline);
+    current_guest_graphics_pipeline_ = current_pipeline;
     current_external_graphics_pipeline_ = VK_NULL_HANDLE;
   }
   auto pipeline_layout =

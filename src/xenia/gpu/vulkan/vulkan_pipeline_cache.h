@@ -59,12 +59,29 @@ class VulkanPipelineCache {
   };
 
   struct Pipeline {
-    VkPipeline pipeline = VK_NULL_HANDLE;
+    std::atomic<VkPipeline> pipeline{VK_NULL_HANDLE};
     // The layouts are owned by the VulkanCommandProcessor, and must not be
     // destroyed by it while the pipeline cache is active.
     const PipelineLayoutProvider* pipeline_layout;
+
     Pipeline(const PipelineLayoutProvider* pipeline_layout_provider)
         : pipeline_layout(pipeline_layout_provider) {}
+
+    // Copy constructor needed for unordered_map
+    Pipeline(const Pipeline& other)
+        : pipeline(other.pipeline.load(std::memory_order_relaxed)),
+          pipeline_layout(other.pipeline_layout) {}
+
+    // Move constructor
+    Pipeline(Pipeline&& other) noexcept
+        : pipeline(other.pipeline.load(std::memory_order_relaxed)),
+          pipeline_layout(other.pipeline_layout) {}
+
+    // Deleted copy assignment to prevent accidental copying
+    Pipeline& operator=(const Pipeline&) = delete;
+
+    // Deleted move assignment
+    Pipeline& operator=(Pipeline&&) = delete;
   };
 
   static constexpr size_t kLayoutUIDEmpty = 0;
