@@ -758,49 +758,15 @@ void PipelineCache::InitializeShaderStorage(
 }
 
 void PipelineCache::ShutdownShaderStorage() {
-  if (storage_write_thread_) {
-    {
-      std::lock_guard<std::mutex> lock(storage_write_request_lock_);
-      storage_write_thread_shutdown_ = true;
-    }
-    storage_write_request_cond_.notify_all();
-    xe::threading::Wait(storage_write_thread_.get(), false);
-    storage_write_thread_.reset();
+  if (shader_cache_storage_) {
+    shader_cache_storage_->Shutdown();
+    shader_cache_storage_.reset();
   }
-  storage_write_shader_queue_.clear();
-  storage_write_pipeline_queue_.clear();
-
-  if (pipeline_storage_file_) {
-    fclose(pipeline_storage_file_);
-    pipeline_storage_file_ = nullptr;
-    pipeline_storage_file_flush_needed_ = false;
-  }
-
-  if (shader_storage_file_) {
-    fclose(shader_storage_file_);
-    shader_storage_file_ = nullptr;
-    shader_storage_file_flush_needed_ = false;
-  }
-
-  shader_storage_cache_root_.clear();
-  shader_storage_title_id_ = 0;
 }
 
 void PipelineCache::EndSubmission() {
-  if (shader_storage_file_flush_needed_ ||
-      pipeline_storage_file_flush_needed_) {
-    {
-      std::lock_guard<std::mutex> lock(storage_write_request_lock_);
-      if (shader_storage_file_flush_needed_) {
-        storage_write_flush_shaders_ = true;
-      }
-      if (pipeline_storage_file_flush_needed_) {
-        storage_write_flush_pipelines_ = true;
-      }
-    }
-    storage_write_request_cond_.notify_one();
-    shader_storage_file_flush_needed_ = false;
-    pipeline_storage_file_flush_needed_ = false;
+  if (shader_cache_storage_) {
+    shader_cache_storage_->EndSubmission();
   }
   if (!creation_threads_.empty()) {
     CreateQueuedPipelinesOnProcessorThread();
@@ -3230,85 +3196,7 @@ ID3D12PipelineState* PipelineCache::CreateD3D12Pipeline(
   return state;
 }
 
-void PipelineCache::StorageWriteThread() {
-  ShaderStoredHeader shader_header;
-  // Don't leak anything in unused bits.
-  std::memset(&shader_header, 0, sizeof(shader_header));
-
-  std::vector<uint32_t> ucode_guest_endian;
-  ucode_guest_endian.reserve(0xFFFF);
-
-  bool flush_shaders = false;
-  bool flush_pipelines = false;
-
-  while (true) {
-    if (flush_shaders) {
-      flush_shaders = false;
-      assert_not_null(shader_storage_file_);
-      fflush(shader_storage_file_);
-    }
-    if (flush_pipelines) {
-      flush_pipelines = false;
-      assert_not_null(pipeline_storage_file_);
-      fflush(pipeline_storage_file_);
-    }
-
-    const Shader* shader = nullptr;
-    PipelineStoredDescription pipeline_description;
-    bool write_pipeline = false;
-    {
-      std::unique_lock<std::mutex> lock(storage_write_request_lock_);
-      if (storage_write_thread_shutdown_) {
-        return;
-      }
-      if (!storage_write_shader_queue_.empty()) {
-        shader = storage_write_shader_queue_.front();
-        storage_write_shader_queue_.pop_front();
-      } else if (storage_write_flush_shaders_) {
-        storage_write_flush_shaders_ = false;
-        flush_shaders = true;
-      }
-      if (!storage_write_pipeline_queue_.empty()) {
-        std::memcpy(&pipeline_description,
-                    &storage_write_pipeline_queue_.front(),
-                    sizeof(pipeline_description));
-        storage_write_pipeline_queue_.pop_front();
-        write_pipeline = true;
-      } else if (storage_write_flush_pipelines_) {
-        storage_write_flush_pipelines_ = false;
-        flush_pipelines = true;
-      }
-      if (!shader && !write_pipeline) {
-        storage_write_request_cond_.wait(lock);
-        continue;
-      }
-    }
-
-    if (shader) {
-      shader_header.ucode_data_hash = shader->ucode_data_hash();
-      shader_header.ucode_dword_count = shader->ucode_dword_count();
-      shader_header.type = shader->type();
-      assert_not_null(shader_storage_file_);
-      fwrite(&shader_header, sizeof(shader_header), 1, shader_storage_file_);
-      if (shader_header.ucode_dword_count) {
-        ucode_guest_endian.resize(shader_header.ucode_dword_count);
-        // Need to swap because the hash is calculated for the shader with guest
-        // endianness.
-        xe::copy_and_swap(ucode_guest_endian.data(), shader->ucode_dwords(),
-                          shader_header.ucode_dword_count);
-        fwrite(ucode_guest_endian.data(),
-               shader_header.ucode_dword_count * sizeof(uint32_t), 1,
-               shader_storage_file_);
-      }
-    }
-
-    if (write_pipeline) {
-      assert_not_null(pipeline_storage_file_);
-      fwrite(&pipeline_description, sizeof(pipeline_description), 1,
-             pipeline_storage_file_);
-    }
-  }
-}
+// StorageWriteThread implementation moved to ShaderCacheStorage class
 
 void PipelineCache::CreationThread(size_t thread_index) {
   while (true) {
