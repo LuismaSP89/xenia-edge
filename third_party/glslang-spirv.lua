@@ -23,7 +23,7 @@ project("glslang-spirv")
     "glslang/SPIRV/Logger.cpp",
     "glslang/SPIRV/Logger.h",
     "glslang/SPIRV/NonSemanticDebugPrintf.h",
-    "glslang/SPIRV/spirv.hpp",
+    "glslang/SPIRV/spirv.hpp11",
     "glslang/SPIRV/SpvBuilder.cpp",
     "glslang/SPIRV/SpvBuilder.h",
     "glslang/SPIRV/spvIR.h",
