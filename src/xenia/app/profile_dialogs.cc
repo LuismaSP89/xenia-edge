@@ -8,7 +8,9 @@
  */
 
 #include "xenia/app/profile_dialogs.h"
+#include "build/version.h"
 #include "xenia/app/emulator_window.h"
+#include "xenia/app/updater_dialog.h"
 #include "xenia/base/png_utils.h"
 #include "xenia/base/system.h"
 #include "xenia/kernel/XLiveAPI.h"
@@ -554,6 +556,5 @@ void ManagerDialog::OnDraw(ImGuiIO& io) {
     emulator_window_->ToggleFriendsDialog();
   }
 }
-
 }  // namespace app
 }  // namespace xe

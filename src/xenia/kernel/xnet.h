@@ -23,6 +23,14 @@
 // clang-format on
 #include <inaddr.h>
 #include <winapifamily.h>
+#define XNET_ALIGN(n) __declspec(align(n))
+#else
+// Linux/POSIX includes
+#include <arpa/inet.h>
+#include <netinet/in.h>
+// Define Windows types for compatibility
+typedef char CHAR;
+#define XNET_ALIGN(n) __attribute__((aligned(n)))
 #endif
 
 namespace xe {
@@ -599,7 +607,7 @@ struct X_ARGUMENT_ENTRY {
 };
 static_assert_size(X_ARGUMENT_ENTRY, 0x10);
 
-struct __declspec(align(8)) X_ARGUMENT_LIST {
+struct XNET_ALIGN(8) X_ARGUMENT_LIST {
   X_ARGUMENT_ENTRY entry[32];
   xe::be<uint32_t> argument_count;
 };

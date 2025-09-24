@@ -10,6 +10,14 @@
 #include <random>
 
 #include "third_party/rapidcsv/src/rapidcsv.h"
+#include "xenia/base/platform.h"
+
+#ifdef XE_PLATFORM_LINUX
+#include <linux/sockios.h>  // For SIOCGIFHWADDR
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
@@ -1876,16 +1884,25 @@ const uint8_t* XLiveAPI::GetMACaddress() {
 }
 
 std::string XLiveAPI::GetNetworkFriendlyName(IP_ADAPTER_ADDRESSES adapter) {
-  char interface_name[MAX_ADAPTER_NAME_LENGTH];
+#ifdef XE_PLATFORM_WIN32
+  char interface_name[256];  // MAX_ADAPTER_NAME_LENGTH equivalent
   size_t bytes_out =
       wcstombs(interface_name, adapter.FriendlyName, sizeof(interface_name));
 
-  // Fallback to adapater GUID if name failed to convert
-  if (bytes_out == -1) {
+  // Fallback to adapter GUID if name failed to convert
+  if (bytes_out == static_cast<size_t>(-1)) {
     strcpy(interface_name, adapter.AdapterName);
   }
 
-  return interface_name;
+  return std::string(interface_name);
+#else
+  // On Linux, FriendlyName is already a char array
+  if (strlen(adapter.FriendlyName) > 0) {
+    return std::string(adapter.FriendlyName);
+  } else {
+    return std::string(adapter.AdapterName);
+  }
+#endif
 }
 
 void XLiveAPI::DiscoverNetworkInterfaces() {
@@ -1956,13 +1973,87 @@ void XLiveAPI::DiscoverNetworkInterfaces() {
     XELOGI("{}", xe::string_util::trim(networks));
   }
 #else
+  // Linux implementation using getifaddrs
+  XELOGI("Linux: Discovering network interfaces...");
+
+  struct ifaddrs *ifaddr, *ifa;
+  adapter_addresses.clear();
+  adapter_addresses_buf.clear();
+
+  if (getifaddrs(&ifaddr) == -1) {
+    XELOGE("Failed to get network interfaces");
+    return;
+  }
+
+  std::string networks = "Network Interfaces:\n";
+
+  for (ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+    if (ifa->ifa_addr == nullptr) continue;
+
+    // Only handle IPv4 addresses
+    if (ifa->ifa_addr->sa_family == AF_INET) {
+      // Skip loopback interface
+      if (ifa->ifa_flags & IFF_LOOPBACK) continue;
+
+      // Check if interface is up
+      if (!(ifa->ifa_flags & IFF_UP)) continue;
+
+      IP_ADAPTER_ADDRESSES adapter = {};
+      strncpy(adapter.AdapterName, ifa->ifa_name,
+              sizeof(adapter.AdapterName) - 1);
+      strncpy(adapter.FriendlyName, ifa->ifa_name,
+              sizeof(adapter.FriendlyName) - 1);
+      adapter.OperStatus = IfOperStatusUp;
+
+      // Determine interface type (basic detection)
+      if (strncmp(ifa->ifa_name, "eth", 3) == 0 ||
+          strncmp(ifa->ifa_name, "enp", 3) == 0) {
+        adapter.IfType = IF_TYPE_ETHERNET_CSMACD;
+      } else if (strncmp(ifa->ifa_name, "wlan", 4) == 0 ||
+                 strncmp(ifa->ifa_name, "wlp", 3) == 0) {
+        adapter.IfType = IF_TYPE_IEEE80211;
+      }
+
+      // Get MAC address
+      int sock = socket(AF_INET, SOCK_DGRAM, 0);
+      if (sock != -1) {
+        struct ifreq ifr;
+        strncpy(ifr.ifr_name, ifa->ifa_name, IFNAMSIZ);
+        if (ioctl(sock, SIOCGIFHWADDR, &ifr) == 0) {
+          memcpy(adapter.PhysicalAddress, ifr.ifr_hwaddr.sa_data, 6);
+          adapter.PhysicalAddressLength = 6;
+        }
+        close(sock);
+      }
+
+      // Create unicast address structure
+      IP_ADAPTER_UNICAST_ADDRESS_LH* addr = new IP_ADAPTER_UNICAST_ADDRESS_LH();
+      addr->Address.lpSockaddr = ifa->ifa_addr;
+      addr->Next = nullptr;
+      adapter.FirstUnicastAddress = addr;
+
+      adapter_addresses.push_back(adapter);
+
+      if (std::string(adapter.AdapterName) == cvars::network_guid) {
+        interface_name = adapter.FriendlyName;
+      }
+
+      struct sockaddr_in* addr_in = (struct sockaddr_in*)ifa->ifa_addr;
+      networks +=
+          fmt::format("{} {}: {}\n", adapter.FriendlyName, adapter.AdapterName,
+                      inet_ntoa(addr_in->sin_addr));
+    }
+  }
+
+  freeifaddrs(ifaddr);
+  XELOGI("{}", networks);
 #endif  // XE_PLATFORM_WIN32
 }
 
 bool XLiveAPI::UpdateNetworkInterface(sockaddr_in local_ip,
                                       IP_ADAPTER_ADDRESSES adapter) {
   for (PIP_ADAPTER_UNICAST_ADDRESS_LH address = adapter.FirstUnicastAddress;
-       address != NULL; address = address->Next) {
+       address != nullptr; address = address->Next) {
     sockaddr_in adapter_addr =
         *reinterpret_cast<sockaddr_in*>(address->Address.lpSockaddr);
 

@@ -35,9 +35,20 @@ project("xenia-app")
     "mspack",
     "snappy",
     "xxhash",
-    "libcurl",
-    "miniupnp",
   })
+  filter { "platforms:Linux" }
+    -- Use system curl on Linux
+    links({
+      "curl",
+    })
+  filter { "platforms:Windows" }
+    -- Use built libcurl on Windows
+    -- miniupnp for UPnP port forwarding (Windows only)
+    links({
+      "libcurl",
+      "miniupnp",
+    })
+  filter {}
   defines({
     "XBYAK_NO_OP_NAMES",
     "XBYAK_ENABLE_OMITTED_OPERAND",

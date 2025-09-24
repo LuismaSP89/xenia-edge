@@ -212,8 +212,9 @@ object_ref<XSocket> XSocket::Accept(XSOCKADDR_IN* name, int* name_len) {
     addrlen = byte_swap(*name_len);
   }
 
-  const uint64_t ret = accept(native_handle_, name ? &sa : nullptr,
-                              name_len ? &addrlen : nullptr);
+  const uint64_t ret =
+      accept(native_handle_, name ? &sa : nullptr,
+             name_len ? reinterpret_cast<socklen_t*>(&addrlen) : nullptr);
   if (ret == -1) {
     return nullptr;
   }
@@ -246,8 +247,10 @@ int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags,
     sa = from->to_host();
   }
 
-  int ret = recvfrom(native_handle_, reinterpret_cast<char*>(buf), buf_len,
-                     flags, from ? &sa : nullptr, (int*)from_len);
+  int ret =
+      recvfrom(native_handle_, reinterpret_cast<char*>(buf), buf_len, flags,
+               from ? &sa : nullptr,
+               from_len ? reinterpret_cast<socklen_t*>(from_len) : nullptr);
 
   if (from) {
     from->to_guest(&sa);
@@ -272,9 +275,17 @@ int XSocket::PollWSARecvFrom(bool wait, WSARecvFromData receive_async_data) {
   fds->fd = native_handle_;
   fds->events = POLLIN;
 
+#ifdef XE_PLATFORM_WIN32
   DWORD bytes_received = 0;
   DWORD flags = receive_async_data.flags;
   auto buffers = new WSABUF[receive_async_data.num_buffers];
+#else
+  uint32_t bytes_received = 0;
+  uint32_t flags = receive_async_data.flags;
+  struct iovec* buffers = nullptr;
+  sockaddr from_addr{};
+  socklen_t from_len = sizeof(from_addr);
+#endif
 
   int ret;
   do {
@@ -293,7 +304,7 @@ int XSocket::PollWSARecvFrom(bool wait, WSARecvFromData receive_async_data) {
   } while (ret == 0 && wait);
 
   if (ret < 0) {
-    receive_async_data.overlapped->internal_high = WSAGetLastError();
+    receive_async_data.overlapped->internal_high = GetLastWSAError();
     XELOGE("XSocket receive thread failed polling with error {}",
            static_cast<uint32_t>(receive_async_data.overlapped->internal_high));
     goto threadexit;
@@ -335,17 +346,24 @@ int XSocket::PollWSARecvFrom(bool wait, WSARecvFromData receive_async_data) {
 
   receive_async_data.overlapped->offset = flags;
 #else
-  auto buffers = new iovec[receive_async_data.num_buffers];
+  buffers = new iovec[receive_async_data.num_buffers];
   for (auto i = 0u; i < receive_async_data.num_buffers; i++) {
     buffers[i].iov_len = receive_async_data.buffers[i].len;
     buffers[i].iov_base = kernel_state()->memory()->TranslateVirtual(
         receive_async_data.buffers[i].buf_ptr);
   }
 
+  if (receive_async_data.from) {
+    from_addr = receive_async_data.from->to_host();
+    if (receive_async_data.from_len) {
+      from_len = *receive_async_data.from_len;
+    }
+  }
+
   msghdr msg;
   std::memset(&msg, 0, sizeof(msg));
-  msg.msg_name = &n_from;
-  msg.msg_namelen = n_from_len;
+  msg.msg_name = receive_async_data.from ? &from_addr : nullptr;
+  msg.msg_namelen = receive_async_data.from ? from_len : 0;
   msg.msg_iov = buffers;
   msg.msg_iovlen = receive_async_data.num_buffers;
 
@@ -360,8 +378,21 @@ int XSocket::PollWSARecvFrom(bool wait, WSARecvFromData receive_async_data) {
     socket_lock.unlock();
   }
 
+  if (receive_async_data.from && ret >= 0) {
+    receive_async_data.from->to_guest(&from_addr);
+    if (receive_async_data.from_len) {
+      *receive_async_data.from_len = from_len;
+    }
+  }
+
   flags = 0;
+#ifdef MSG_PARTIAL
   if (msg.msg_flags & MSG_TRUNC) flags |= MSG_PARTIAL;
+#else
+  // MSG_PARTIAL doesn't exist on Linux, MSG_TRUNC indicates partial message
+  if (msg.msg_flags & MSG_TRUNC)
+    flags |= 0x8000;  // Use Windows MSG_PARTIAL value
+#endif
   if (msg.msg_flags & MSG_OOB) flags |= MSG_OOB;
   receive_async_data.overlapped->offset = flags;
 
@@ -370,7 +401,9 @@ int XSocket::PollWSARecvFrom(bool wait, WSARecvFromData receive_async_data) {
     ret = 0;
   }
 #endif
-  delete[] buffers;
+  if (buffers) {
+    delete[] buffers;
+  }
 
 threadexit:
   std::unique_lock lock(receive_mutex_);
@@ -515,8 +548,14 @@ int XSocket::SendTo(uint8_t* buf, uint32_t buf_len, uint32_t flags,
 
 int XSocket::WSAEventSelect(uint64_t socket_handle, uint64_t event_handle,
                             uint32_t flags) {
+#ifdef XE_PLATFORM_WIN32
   return ::WSAEventSelect(socket_handle, reinterpret_cast<HANDLE>(event_handle),
                           flags);
+#else
+  // Linux doesn't have WSAEventSelect, return success for now
+  // TODO: Implement event-based socket notification on Linux
+  return 0;
+#endif
 }
 
 bool XSocket::QueuePacket(uint32_t src_ip, uint16_t src_port,

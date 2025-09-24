@@ -35,6 +35,41 @@
 
 #ifdef XE_PLATFORM_WIN32
 #include <iphlpapi.h>
+#else
+// Linux network interface handling
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <sys/ioctl.h>
+#include <cstring>
+
+// Define compatibility structures for Linux
+struct IP_ADAPTER_UNICAST_ADDRESS_LH {
+  struct {
+    sockaddr* lpSockaddr;
+  } Address;
+  struct IP_ADAPTER_UNICAST_ADDRESS_LH* Next;
+};
+typedef struct IP_ADAPTER_UNICAST_ADDRESS_LH* PIP_ADAPTER_UNICAST_ADDRESS_LH;
+
+struct IP_ADAPTER_ADDRESSES {
+  char AdapterName[256];
+  char FriendlyName[256];
+  unsigned char PhysicalAddress[6];
+  unsigned long PhysicalAddressLength;
+  unsigned long IfType;
+  unsigned long OperStatus;
+  PIP_ADAPTER_UNICAST_ADDRESS_LH FirstUnicastAddress;
+  IP_ADAPTER_ADDRESSES* Next;
+};
+
+// Interface types
+#define IF_TYPE_ETHERNET_CSMACD 6
+#define IF_TYPE_IEEE80211 71
+
+// Operational status
+#define IfOperStatusUp 1
 #endif  // XE_PLATFORM_WIN32
 
 namespace xe {

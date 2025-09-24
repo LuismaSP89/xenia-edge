@@ -11,9 +11,12 @@
 #include "util/net_utils.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/platform.h"
 
+#if XE_PLATFORM_WIN32
 #include <third_party/miniupnp/miniupnpc/include/miniwget.h>
 #include <third_party/miniupnp/miniupnpc/include/upnpcommands.h>
+#endif
 
 DEFINE_string(upnp_root, "", "UPnP Root Device", "Live");
 
@@ -27,6 +30,8 @@ using namespace xe::threading;
 // https://github.com/RPCS3/rpcs3/blob/05b6108c66b2cb5bdbb97ff2412d4d39aa7dc331/rpcs3/Emu/NP/upnp_handler.cpp
 namespace xe {
 namespace kernel {
+
+#if XE_PLATFORM_WIN32
 
 UPnP::UPnP() {}
 
@@ -339,6 +344,16 @@ const std::string UPnP::GetLocalIP() {
 
   return lanaddr;
 }
+
+#elif XE_PLATFORM_LINUX
+
+// Stub implementations for Linux platform
+UPnP::UPnP() {}
+UPnP::~UPnP() {}
+
+#else
+#error "UPnP not implemented for this platform"
+#endif  // XE_PLATFORM_WIN32
 
 }  // namespace kernel
 }  // namespace xe

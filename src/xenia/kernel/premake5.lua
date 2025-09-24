@@ -11,14 +11,25 @@ project("xenia-kernel")
     "fmt",
     "zlib-ng",
     "pugixml",
-    "libcurl",
-    "miniupnp",
     "xenia-apu",
     "xenia-base",
     "xenia-cpu",
     "xenia-hid",
     "xenia-vfs",
   })
+  filter { "platforms:Linux" }
+    -- Use system curl on Linux
+    links({
+      "curl",
+    })
+  filter { "platforms:Windows" }
+    -- Use built libcurl on Windows
+    -- miniupnp for UPnP port forwarding (Windows only)
+    links({
+      "libcurl",
+      "miniupnp",
+    })
+  filter {}
   defines({
     "X86_FEATURES",
     "X86_HAVE_XSAVE_INTRIN",

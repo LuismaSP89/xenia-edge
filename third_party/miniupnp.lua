@@ -3,25 +3,31 @@ project("miniupnp")
   uuid("b7e0088f-ace6-4bba-b2cc-faae156c27fc")
   kind("StaticLib")
   language("C")
-  links({
-    "iphlpapi",
-    "ws2_32"
-  })
   defines({
     "MINIUPNP_STATICLIB"
   })
 
   filter { "platforms:Windows" }
+    links({
+      "iphlpapi",
+      "ws2_32"
+    })
     prebuildcommands {
       "cd $(SolutionDir)..\\third_party\\miniupnp\\miniupnpc\\msvc",
       "genminiupnpcstrings.vbs"
     }
 
   filter { "platforms:Linux" }
-    prebuildcommands {
-      "cd $(SolutionDir)..\\third_party\\miniupnp\\miniupnpc",
-      "updateminiupnpcstrings.sh"
-    }
+    defines({
+      "_GNU_SOURCE",  -- For struct ip_mreqn
+      "_DEFAULT_SOURCE",  -- For various network functions
+      "MINIUPNPC_GET_SRC_ADDR",
+      "MINIUPNPC_SET_SOCKET_TIMEOUT",
+    })
+    -- Skip prebuild command for now - the strings should already be generated
+    -- prebuildcommands {
+    --   "cd path/to/miniupnp/miniupnpc && ./updateminiupnpcstrings.sh"
+    -- }
 
   filter {}
 
