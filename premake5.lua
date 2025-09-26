@@ -398,3 +398,4 @@ workspace("xenia")
     include("src/xenia/hid/xinput")
     include("src/xenia/ui/d3d12")
   end
+  --deleteme
