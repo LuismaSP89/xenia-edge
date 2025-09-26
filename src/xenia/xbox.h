@@ -19,6 +19,7 @@ namespace xe {
 
 typedef uint32_t X_HANDLE;
 #define X_INVALID_HANDLE_VALUE ((X_HANDLE)-1)
+// deleteme
 
 // TODO(benvanik): type all of this so we get some safety.
 
