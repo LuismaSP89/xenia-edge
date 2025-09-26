@@ -15,6 +15,7 @@
 #include "xenia/apu/apu_flags.h"
 #include "xenia/apu/conversion.h"
 #include "xenia/base/assert.h"
+#include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/profiling.h"
 
@@ -74,6 +75,11 @@ bool ALSAAudioDriver::Initialize() {
     conversion_buffer_ =
         std::make_unique<float[]>(output_channels_ * channel_samples_);
   }
+
+  // Allocate resample buffer for time scaling (up to 4x ratio)
+  // Max size: channel_samples * channels * max_ratio
+  resample_buffer_ =
+      std::make_unique<float[]>(output_channels_ * channel_samples_ * 4);
 
   // Initialize ring buffer with allocated frames
   for (size_t i = 0; i < kRingBufferSize; i++) {
@@ -339,6 +345,21 @@ void ALSAAudioDriver::WorkerThread() {
         }
       }
 
+      // Apply time scaling / resampling
+      float frequency_ratio = static_cast<float>(Clock::guest_time_scalar());
+      size_t frames_to_write = channel_samples_;
+      float* final_output = output;
+
+      if (frequency_ratio != 1.0f) {
+        // Resample based on time scalar
+        // Max output frames = channel_samples_ * 4 (supports up to 4x slowdown)
+        size_t resampled_frames = ResampleFrame(
+            output, resample_buffer_.get(), channel_samples_,
+            channel_samples_ * 4, frequency_ratio, output_channels_);
+        frames_to_write = resampled_frames;
+        final_output = resample_buffer_.get();
+      }
+
       // Check available space before writing to avoid blocking
       snd_pcm_sframes_t avail = snd_pcm_avail(pcm_handle_);
       if (avail < 0) {
@@ -352,8 +373,8 @@ void ALSAAudioDriver::WorkerThread() {
 
       // Only write if we have enough space
       snd_pcm_sframes_t written = 0;
-      if (avail >= (snd_pcm_sframes_t)channel_samples_) {
-        written = snd_pcm_writei(pcm_handle_, output, channel_samples_);
+      if (avail >= (snd_pcm_sframes_t)frames_to_write) {
+        written = snd_pcm_writei(pcm_handle_, final_output, frames_to_write);
         if (written < 0) {
           if (!RecoverFromUnderrun(written)) {
             XELOGE("Failed to write audio: {}", snd_strerror(written));
@@ -361,8 +382,8 @@ void ALSAAudioDriver::WorkerThread() {
             break;
           }
           continue;  // Skip frame advancement if we had to recover
-        } else if (written != (snd_pcm_sframes_t)channel_samples_) {
-          XELOGW("Partial write: {} of {} frames", written, channel_samples_);
+        } else if (written != (snd_pcm_sframes_t)frames_to_write) {
+          XELOGW("Partial write: {} of {} frames", written, frames_to_write);
         }
 
         // Move to next frame in ring buffer
@@ -433,6 +454,53 @@ void ALSAAudioDriver::ConvertChannels(const float* input, float* output,
     std::memcpy(output, input,
                 channel_samples * frame_channels_ * sizeof(float));
   }
+}
+
+size_t ALSAAudioDriver::ResampleFrame(const float* input, float* output,
+                                      size_t input_frame_count,
+                                      size_t output_capacity_frames,
+                                      float frequency_ratio,
+                                      uint32_t channels) {
+  if (frequency_ratio == 1.0f) {
+    size_t frames_to_copy = std::min(input_frame_count, output_capacity_frames);
+    std::memcpy(output, input, frames_to_copy * channels * sizeof(float));
+    return frames_to_copy;
+  }
+
+  // Linear interpolation resampling for interleaved multi-channel audio
+  // frequency_ratio > 1.0 = faster playback (fewer output frames)
+  // frequency_ratio < 1.0 = slower playback (more output frames)
+  const double step = static_cast<double>(frequency_ratio);
+  size_t output_frame_count = 0;
+  double position = resample_frac_position_;
+
+  while (output_frame_count < output_capacity_frames) {
+    size_t frame_index = static_cast<size_t>(position);
+    if (frame_index + 1 >= input_frame_count) {
+      break;
+    }
+
+    double frac = position - frame_index;
+    double inv_frac = 1.0 - frac;
+
+    // Interpolate each channel
+    for (uint32_t ch = 0; ch < channels; ch++) {
+      size_t in_idx0 = frame_index * channels + ch;
+      size_t in_idx1 = (frame_index + 1) * channels + ch;
+      size_t out_idx = output_frame_count * channels + ch;
+
+      output[out_idx] =
+          static_cast<float>(input[in_idx0] * inv_frac + input[in_idx1] * frac);
+    }
+
+    position += step;
+    output_frame_count++;
+  }
+
+  // Store fractional part for next frame
+  resample_frac_position_ = position - static_cast<size_t>(position);
+
+  return output_frame_count;
 }
 
 void ALSAAudioDriver::Pause() {

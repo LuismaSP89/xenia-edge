@@ -43,6 +43,9 @@ class ALSAAudioDriver : public AudioDriver {
   bool RecoverFromUnderrun(int err);
   void ConvertChannels(const float* input, float* output,
                        size_t channel_samples);
+  size_t ResampleFrame(const float* input, float* output,
+                       size_t input_frame_count, size_t output_capacity_frames,
+                       float frequency_ratio, uint32_t channels);
 
   xe::threading::Semaphore* semaphore_ = nullptr;
 
@@ -82,6 +85,10 @@ class ALSAAudioDriver : public AudioDriver {
 
   // Conversion buffer
   std::unique_ptr<float[]> conversion_buffer_;
+
+  // Time scaling / resampling state
+  std::unique_ptr<float[]> resample_buffer_;
+  double resample_frac_position_ = 0.0;
 };
 
 }  // namespace alsa
