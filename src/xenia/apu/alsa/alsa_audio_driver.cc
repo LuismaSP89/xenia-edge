@@ -346,8 +346,15 @@ void ALSAAudioDriver::WorkerThread() {
     size_t current_read = read_index_.load(std::memory_order_relaxed);
     size_t current_write = write_index_.load(std::memory_order_acquire);
 
-    while (frames_available >= (snd_pcm_sframes_t)channel_samples_ &&
-           current_read != current_write) {
+    while (frames_available >= (snd_pcm_sframes_t)channel_samples_) {
+      // Check if we need to refresh write_index_ (only when caught up)
+      if (current_read == current_write) {
+        current_write = write_index_.load(std::memory_order_acquire);
+        if (current_read == current_write) {
+          break;  // Still no new frames available
+        }
+      }
+
       float* frame = ring_buffer_[current_read];
       float* output = frame;
 
@@ -419,9 +426,6 @@ void ALSAAudioDriver::WorkerThread() {
 
         // Signal that a frame was consumed
         semaphore_->Release(1, nullptr);
-
-        // Reload write index to see if producer added more data
-        current_write = write_index_.load(std::memory_order_acquire);
       } else {
         // Not enough space, wait for next iteration
         frames_available = 0;  // Exit the inner loop to wait again
