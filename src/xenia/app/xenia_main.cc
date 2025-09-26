@@ -36,6 +36,9 @@
 
 // Available audio systems:
 #include "xenia/apu/nop/nop_audio_system.h"
+#if XE_PLATFORM_LINUX
+#include "xenia/apu/alsa/alsa_audio_system.h"
+#endif  // XE_PLATFORM_LINUX
 #if !XE_PLATFORM_ANDROID
 #include "xenia/apu/sdl/sdl_audio_system.h"
 #endif  // !XE_PLATFORM_ANDROID
@@ -60,10 +63,34 @@
 #include "xenia/hid/xinput/xinput_hid.h"
 #endif  // XE_PLATFORM_WIN32
 
-DEFINE_string(apu, "any", "Audio system. Use: [any, nop, sdl, xaudio2]", "APU");
-DEFINE_string(gpu, "any", "Graphics system. Use: [any, d3d12, vulkan, null]",
+DEFINE_string(apu, "any",
+              "Audio system. Use: "
+#if XE_PLATFORM_WIN32
+              "[any, nop, sdl, xaudio2]"
+#elif XE_PLATFORM_LINUX
+              "[any, alsa, nop, sdl]"
+#else
+              "[any, nop, sdl]"
+#endif
+              ,
+              "APU");
+DEFINE_string(gpu, "any",
+              "Graphics system. Use: "
+#if XE_PLATFORM_WIN32
+              "[any, d3d12, vulkan, null]"
+#else
+              "[any, vulkan, null]"
+#endif
+              ,
               "GPU");
-DEFINE_string(hid, "any", "Input system. Use: [any, nop, sdl, winkey, xinput]",
+DEFINE_string(hid, "any",
+              "Input system. Use: "
+#if XE_PLATFORM_WIN32
+              "[any, nop, sdl, winkey, xinput]"
+#else
+              "[any, nop, sdl]"
+#endif
+              ,
               "HID");
 
 DEFINE_path(
@@ -293,6 +320,9 @@ std::unique_ptr<apu::AudioSystem> EmulatorApp::CreateAudioSystem(
 #if XE_PLATFORM_WIN32
   factory.Add<apu::xaudio2::XAudio2AudioSystem>("xaudio2");
 #endif  // XE_PLATFORM_WIN32
+#if XE_PLATFORM_LINUX
+  factory.Add<apu::alsa::ALSAAudioSystem>("alsa");
+#endif  // XE_PLATFORM_LINUX
 #if !XE_PLATFORM_ANDROID
   factory.Add<apu::sdl::SDLAudioSystem>("sdl");
 #endif  // !XE_PLATFORM_ANDROID

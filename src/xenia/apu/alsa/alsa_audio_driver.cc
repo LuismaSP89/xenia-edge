@@ -1,0 +1,471 @@
+/**
+ ******************************************************************************
+ * Xenia : Xbox 360 Emulator Research Project                                 *
+ ******************************************************************************
+ * Copyright 2025. All rights reserved.                                       *
+ * Released under the BSD license - see LICENSE in the root for more details. *
+ ******************************************************************************
+ */
+
+#include "xenia/apu/alsa/alsa_audio_driver.h"
+
+#include <cerrno>
+#include <cstring>
+
+#include "xenia/apu/apu_flags.h"
+#include "xenia/apu/conversion.h"
+#include "xenia/base/assert.h"
+#include "xenia/base/logging.h"
+#include "xenia/base/profiling.h"
+
+namespace xe {
+namespace apu {
+namespace alsa {
+
+ALSAAudioDriver::ALSAAudioDriver(xe::threading::Semaphore* semaphore,
+                                 uint32_t frequency, uint32_t channels,
+                                 bool need_format_conversion)
+    : semaphore_(semaphore),
+      frame_frequency_(frequency),
+      frame_channels_(channels),
+      need_format_conversion_(need_format_conversion) {
+  switch (frame_channels_) {
+    case 6:
+      channel_samples_ = 256;
+      break;
+    case 2:
+      channel_samples_ = 768;
+      break;
+    default:
+      assert_unhandled_case(frame_channels_);
+  }
+  frame_size_ = sizeof(float) * frame_channels_ * channel_samples_;
+  assert_true(frame_size_ <= kFrameSizeMax);
+  assert_true(!need_format_conversion_ || frame_channels_ == 6);
+}
+
+ALSAAudioDriver::~ALSAAudioDriver() { Shutdown(); }
+
+bool ALSAAudioDriver::Initialize() {
+  // Allocate ALSA parameter structures
+  int err = snd_pcm_hw_params_malloc(&hw_params_);
+  if (err < 0) {
+    XELOGE("Failed to allocate hw_params: {}", snd_strerror(err));
+    return false;
+  }
+
+  err = snd_pcm_sw_params_malloc(&sw_params_);
+  if (err < 0) {
+    XELOGE("Failed to allocate sw_params: {}", snd_strerror(err));
+    return false;
+  }
+
+  // Setup the ALSA device
+  if (!SetupAlsaDevice()) {
+    return false;
+  }
+
+  // Allocate conversion buffer if needed
+  if (need_format_conversion_ || output_channels_ != frame_channels_) {
+    conversion_buffer_ =
+        std::make_unique<float[]>(output_channels_ * channel_samples_);
+  }
+
+  // Initialize ring buffer with allocated frames
+  for (size_t i = 0; i < kRingBufferSize; i++) {
+    ring_buffer_[i] =
+        reinterpret_cast<float*>(std::aligned_alloc(64, frame_size_));
+    std::memset(ring_buffer_[i], 0, frame_size_);
+  }
+
+  // Start the worker thread
+  running_ = true;
+  worker_thread_ =
+      std::make_unique<std::thread>(&ALSAAudioDriver::WorkerThread, this);
+
+  // Try to set thread priority for lower latency (non-fatal if it fails)
+  pthread_t thread = worker_thread_->native_handle();
+  struct sched_param param = {};
+  param.sched_priority = 1;  // Use minimum RT priority (safer)
+  int res = pthread_setschedparam(thread, SCHED_FIFO, &param);
+  if (res != 0) {
+    if (res == EPERM) {
+      XELOGI("Cannot set real-time priority - running with normal priority");
+    } else {
+      XELOGW("Failed to set thread priority: {}", res);
+    }
+    // Continue anyway - audio will work, just with potentially higher latency
+  }
+
+  return true;
+}
+
+bool ALSAAudioDriver::SetupAlsaDevice() {
+  // Open PCM device
+  int err = snd_pcm_open(&pcm_handle_, "default", SND_PCM_STREAM_PLAYBACK, 0);
+  if (err < 0) {
+    XELOGE("Failed to open PCM device: {}", snd_strerror(err));
+    return false;
+  }
+
+  // Initialize hardware parameters
+  err = snd_pcm_hw_params_any(pcm_handle_, hw_params_);
+  if (err < 0) {
+    XELOGE("Failed to initialize hw_params: {}", snd_strerror(err));
+    return false;
+  }
+
+  // Set access type - interleaved float samples
+  err = snd_pcm_hw_params_set_access(pcm_handle_, hw_params_,
+                                     SND_PCM_ACCESS_RW_INTERLEAVED);
+  if (err < 0) {
+    XELOGE("Failed to set access type: {}", snd_strerror(err));
+    return false;
+  }
+
+  // Set sample format - 32-bit float
+  err = snd_pcm_hw_params_set_format(pcm_handle_, hw_params_,
+                                     SND_PCM_FORMAT_FLOAT_LE);
+  if (err < 0) {
+    XELOGE("Failed to set format: {}", snd_strerror(err));
+    return false;
+  }
+
+  // Set sample rate
+  unsigned int rate = frame_frequency_;
+  err = snd_pcm_hw_params_set_rate_near(pcm_handle_, hw_params_, &rate, 0);
+  if (err < 0) {
+    XELOGE("Failed to set sample rate: {}", snd_strerror(err));
+    return false;
+  }
+  if (rate != frame_frequency_) {
+    XELOGW("Sample rate {} not supported, using {}", frame_frequency_, rate);
+  }
+
+  // Try to set channel count - prefer native format, fall back if needed
+  output_channels_ = frame_channels_;
+  err =
+      snd_pcm_hw_params_set_channels(pcm_handle_, hw_params_, output_channels_);
+  if (err < 0 && frame_channels_ == 6) {
+    // Try stereo fallback for 5.1
+    output_channels_ = 2;
+    err = snd_pcm_hw_params_set_channels(pcm_handle_, hw_params_, 2);
+  }
+  if (err < 0) {
+    XELOGE("Failed to set channels: {}", snd_strerror(err));
+    return false;
+  }
+
+  // Set period size for good balance between latency and stability
+  // Use power-of-2 sizes that work well with most hardware
+  if (output_channels_ == 6) {
+    // For 5.1, use 512 samples (from 256 base)
+    period_size_ = 512;
+  } else {
+    // For stereo, use 1024 samples (from 768 base)
+    period_size_ = 1024;
+  }
+
+  err = snd_pcm_hw_params_set_period_size_near(pcm_handle_, hw_params_,
+                                               &period_size_, 0);
+  if (err < 0) {
+    XELOGE("Failed to set period size: {}", snd_strerror(err));
+    return false;
+  }
+
+  // Set buffer size to 4 periods (good balance)
+  // This gives ~85ms latency at 48kHz which is acceptable for gaming
+  buffer_size_ = period_size_ * 4;
+  err = snd_pcm_hw_params_set_buffer_size_near(pcm_handle_, hw_params_,
+                                               &buffer_size_);
+  if (err < 0) {
+    XELOGE("Failed to set buffer size: {}", snd_strerror(err));
+    return false;
+  }
+
+  // Apply hardware parameters
+  err = snd_pcm_hw_params(pcm_handle_, hw_params_);
+  if (err < 0) {
+    XELOGE("Failed to apply hw_params: {}", snd_strerror(err));
+    return false;
+  }
+
+  // Setup software parameters
+  err = snd_pcm_sw_params_current(pcm_handle_, sw_params_);
+  if (err < 0) {
+    XELOGE("Failed to get current sw_params: {}", snd_strerror(err));
+    return false;
+  }
+
+  // Start threshold - start playback when we have 2 periods of data
+  // This ensures smooth playback start without excessive delay
+  err = snd_pcm_sw_params_set_start_threshold(pcm_handle_, sw_params_,
+                                              period_size_ * 2);
+  if (err < 0) {
+    XELOGE("Failed to set start threshold: {}", snd_strerror(err));
+    return false;
+  }
+
+  // Allow transfer when at least period_size frames available
+  err = snd_pcm_sw_params_set_avail_min(pcm_handle_, sw_params_, period_size_);
+  if (err < 0) {
+    XELOGE("Failed to set avail min: {}", snd_strerror(err));
+    return false;
+  }
+
+  // Apply software parameters
+  err = snd_pcm_sw_params(pcm_handle_, sw_params_);
+  if (err < 0) {
+    XELOGE("Failed to apply sw_params: {}", snd_strerror(err));
+    return false;
+  }
+
+  XELOGI(
+      "ALSA initialized: {} Hz, {} channels (output: {}), period: {}, buffer: "
+      "{}",
+      rate, frame_channels_, output_channels_, period_size_, buffer_size_);
+
+  return true;
+}
+
+void ALSAAudioDriver::SubmitFrame(float* frame) {
+  SCOPE_profile_cpu_f("apu");
+
+  // Calculate next write position
+  size_t next_write = (write_index_ + 1) % kRingBufferSize;
+
+  // Check if buffer is full
+  if (next_write == read_index_.load()) {
+    // Buffer full - wait or drop frame
+    XELOGW("ALSA ring buffer full, dropping audio frame");
+    return;
+  }
+
+  // Copy frame to ring buffer
+  std::memcpy(ring_buffer_[write_index_], frame, frame_size_);
+
+  // Update write index
+  write_index_ = next_write;
+}
+
+void ALSAAudioDriver::WorkerThread() {
+  xe::threading::set_name("ALSA Audio");
+
+  // Prepare PCM for playback
+  int err = snd_pcm_prepare(pcm_handle_);
+  if (err < 0) {
+    XELOGE("Failed to prepare PCM: {}", snd_strerror(err));
+    return;
+  }
+
+  // Prefill buffer with silence to avoid initial underrun
+  // Fill 2 periods to match the start threshold
+  size_t silence_frames = period_size_ * 2;
+  auto silence = std::make_unique<float[]>(silence_frames * output_channels_);
+  snd_pcm_writei(pcm_handle_, silence.get(), silence_frames);
+
+  while (running_) {
+    if (paused_) {
+      snd_pcm_drop(pcm_handle_);
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      continue;
+    }
+
+    // Wait for available space in ALSA buffer
+    err = snd_pcm_wait(pcm_handle_, 100);
+    if (err < 0) {
+      if (RecoverFromUnderrun(err)) {
+        continue;
+      }
+      XELOGE("PCM wait failed: {}", snd_strerror(err));
+      break;
+    }
+
+    // Check how many frames we can write
+    snd_pcm_sframes_t frames_available = snd_pcm_avail_update(pcm_handle_);
+    if (frames_available < 0) {
+      if (RecoverFromUnderrun(frames_available)) {
+        continue;
+      }
+      XELOGE("Failed to get available frames: {}",
+             snd_strerror(frames_available));
+      break;
+    }
+
+    // Write frames from ring buffer
+    while (frames_available >= (snd_pcm_sframes_t)channel_samples_ &&
+           read_index_ != write_index_.load()) {
+      float* frame = ring_buffer_[read_index_];
+      float* output = frame;
+
+      // Convert format/channels if needed
+      // ALSA expects interleaved data, so we MUST convert if data is sequential
+      if (need_format_conversion_ || output_channels_ != frame_channels_) {
+        ConvertChannels(frame, conversion_buffer_.get(), channel_samples_);
+        output = conversion_buffer_.get();
+      } else {
+        // Even without format conversion, we need to handle the data layout
+        // Xbox 360 audio can be in sequential format, but ALSA expects
+        // interleaved For now, assume if no conversion needed, data is already
+        // in correct format (This matches XAudio2 behavior where memcpy is
+        // used)
+        output = frame;
+      }
+
+      // Apply volume - must handle both sequential and interleaved formats
+      float vol = volume_.load();
+      if (vol != 1.0f) {
+        size_t total_samples = output_channels_ * channel_samples_;
+        // Volume applies the same regardless of layout
+        for (size_t i = 0; i < total_samples; i++) {
+          output[i] *= vol;
+        }
+      }
+
+      // Check available space before writing to avoid blocking
+      snd_pcm_sframes_t avail = snd_pcm_avail(pcm_handle_);
+      if (avail < 0) {
+        if (!RecoverFromUnderrun(avail)) {
+          XELOGE("Failed to check available space: {}", snd_strerror(avail));
+          running_ = false;
+          break;
+        }
+        continue;
+      }
+
+      // Only write if we have enough space
+      snd_pcm_sframes_t written = 0;
+      if (avail >= (snd_pcm_sframes_t)channel_samples_) {
+        written = snd_pcm_writei(pcm_handle_, output, channel_samples_);
+        if (written < 0) {
+          if (!RecoverFromUnderrun(written)) {
+            XELOGE("Failed to write audio: {}", snd_strerror(written));
+            running_ = false;
+            break;
+          }
+          continue;  // Skip frame advancement if we had to recover
+        } else if (written != (snd_pcm_sframes_t)channel_samples_) {
+          XELOGW("Partial write: {} of {} frames", written, channel_samples_);
+        }
+
+        // Move to next frame in ring buffer
+        read_index_ = (read_index_ + 1) % kRingBufferSize;
+        frames_available -= written;
+
+        // Signal that a frame was consumed
+        semaphore_->Release(1, nullptr);
+      } else {
+        // Not enough space, wait for next iteration
+        frames_available = 0;  // Exit the inner loop to wait again
+        continue;
+      }
+    }
+  }
+}
+
+bool ALSAAudioDriver::RecoverFromUnderrun(int err) {
+  if (err == -EPIPE) {
+    // Underrun occurred
+    XELOGW("ALSA underrun detected, recovering...");
+    err = snd_pcm_prepare(pcm_handle_);
+    if (err < 0) {
+      XELOGE("Failed to recover from underrun: {}", snd_strerror(err));
+      return false;
+    }
+    return true;
+  } else if (err == -ESTRPIPE) {
+    // Stream suspended
+    XELOGW("ALSA stream suspended");
+    while ((err = snd_pcm_resume(pcm_handle_)) == -EAGAIN) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (err < 0) {
+      err = snd_pcm_prepare(pcm_handle_);
+      if (err < 0) {
+        XELOGE("Failed to resume stream: {}", snd_strerror(err));
+        return false;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+void ALSAAudioDriver::ConvertChannels(const float* input, float* output,
+                                      size_t channel_samples) {
+  if (need_format_conversion_) {
+    // Format conversion handles both endian swap and channel conversion
+    // Input is sequential big-endian, output is interleaved little-endian
+    if (output_channels_ == 2) {
+      conversion::sequential_6_BE_to_interleaved_2_LE(output, input,
+                                                      channel_samples);
+    } else if (output_channels_ == 6) {
+      conversion::sequential_6_BE_to_interleaved_6_LE(output, input,
+                                                      channel_samples);
+    }
+  } else if (output_channels_ != frame_channels_) {
+    // Channel count mismatch without format conversion - shouldn't happen
+    // but handle it by copying what we can
+    size_t samples_to_copy =
+        std::min(output_channels_, frame_channels_) * channel_samples;
+    std::memcpy(output, input, samples_to_copy * sizeof(float));
+  } else {
+    // Direct copy - input format matches output format exactly
+    // For stereo: 768 samples * 2 channels * 4 bytes = 6144 bytes
+    // For 5.1: 256 samples * 6 channels * 4 bytes = 6144 bytes
+    std::memcpy(output, input,
+                channel_samples * frame_channels_ * sizeof(float));
+  }
+}
+
+void ALSAAudioDriver::Pause() {
+  paused_ = true;
+  if (pcm_handle_) {
+    snd_pcm_pause(pcm_handle_, 1);
+  }
+}
+
+void ALSAAudioDriver::Resume() {
+  paused_ = false;
+  if (pcm_handle_) {
+    snd_pcm_pause(pcm_handle_, 0);
+  }
+}
+
+void ALSAAudioDriver::Shutdown() {
+  if (running_) {
+    running_ = false;
+    if (worker_thread_) {
+      worker_thread_->join();
+      worker_thread_.reset();
+    }
+  }
+
+  if (pcm_handle_) {
+    snd_pcm_drop(pcm_handle_);
+    snd_pcm_close(pcm_handle_);
+    pcm_handle_ = nullptr;
+  }
+
+  if (hw_params_) {
+    snd_pcm_hw_params_free(hw_params_);
+    hw_params_ = nullptr;
+  }
+
+  if (sw_params_) {
+    snd_pcm_sw_params_free(sw_params_);
+    sw_params_ = nullptr;
+  }
+
+  // Free ring buffer frames
+  for (size_t i = 0; i < kRingBufferSize; i++) {
+    if (ring_buffer_[i]) {
+      std::free(ring_buffer_[i]);
+      ring_buffer_[i] = nullptr;
+    }
+  }
+}
+
+}  // namespace alsa
+}  // namespace apu
+}  // namespace xe
