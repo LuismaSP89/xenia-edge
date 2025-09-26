@@ -12,6 +12,12 @@
 #include <cerrno>
 #include <cstring>
 
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
+    defined(_M_IX86)
+#include <immintrin.h>
+#define XE_ALSA_HAS_SIMD 1
+#endif
+
 #include "xenia/apu/apu_flags.h"
 #include "xenia/apu/conversion.h"
 #include "xenia/base/assert.h"
@@ -246,6 +252,12 @@ bool ALSAAudioDriver::SetupAlsaDevice() {
       "{}",
       rate, frame_channels_, output_channels_, period_size_, buffer_size_);
 
+#if defined(XE_ALSA_HAS_SIMD)
+  XELOGI("ALSA: SIMD (SSE) volume mixing enabled");
+#else
+  XELOGI("ALSA: Using scalar volume mixing (SIMD not available)");
+#endif
+
   return true;
 }
 
@@ -335,15 +347,10 @@ void ALSAAudioDriver::WorkerThread() {
         output = frame;
       }
 
-      // Apply volume - must handle both sequential and interleaved formats
+      // Apply volume using SIMD-optimized function
       // Cache volume to ensure consistency across the entire frame
       float vol = volume_.load(std::memory_order_relaxed);
-      if (vol != 1.0f) {
-        size_t total_samples = output_channels_ * channel_samples_;
-        for (size_t i = 0; i < total_samples; i++) {
-          output[i] *= vol;
-        }
-      }
+      ApplyVolume(output, output_channels_ * channel_samples_, vol);
 
       // Apply time scaling / resampling
       float frequency_ratio = static_cast<float>(Clock::guest_time_scalar());
@@ -501,6 +508,35 @@ size_t ALSAAudioDriver::ResampleFrame(const float* input, float* output,
   resample_frac_position_ = position - static_cast<size_t>(position);
 
   return output_frame_count;
+}
+
+void ALSAAudioDriver::ApplyVolume(float* buffer, size_t sample_count,
+                                  float volume) {
+  if (volume == 1.0f) {
+    return;
+  }
+
+#if defined(XE_ALSA_HAS_SIMD)
+  // Use SSE for SIMD volume application (4 floats at a time)
+  const __m128 vol_vec = _mm_set1_ps(volume);
+  size_t simd_count = sample_count & ~3;  // Round down to multiple of 4
+
+  for (size_t i = 0; i < simd_count; i += 4) {
+    __m128 data = _mm_loadu_ps(&buffer[i]);
+    data = _mm_mul_ps(data, vol_vec);
+    _mm_storeu_ps(&buffer[i], data);
+  }
+
+  // Handle remaining samples (0-3) with scalar operations
+  for (size_t i = simd_count; i < sample_count; i++) {
+    buffer[i] *= volume;
+  }
+#else
+  // Fallback scalar implementation for non-x86 platforms
+  for (size_t i = 0; i < sample_count; i++) {
+    buffer[i] *= volume;
+  }
+#endif
 }
 
 void ALSAAudioDriver::Pause() {

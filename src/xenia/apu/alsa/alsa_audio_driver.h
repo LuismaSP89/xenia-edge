@@ -46,6 +46,7 @@ class ALSAAudioDriver : public AudioDriver {
   size_t ResampleFrame(const float* input, float* output,
                        size_t input_frame_count, size_t output_capacity_frames,
                        float frequency_ratio, uint32_t channels);
+  void ApplyVolume(float* buffer, size_t sample_count, float volume);
 
   xe::threading::Semaphore* semaphore_ = nullptr;
 
