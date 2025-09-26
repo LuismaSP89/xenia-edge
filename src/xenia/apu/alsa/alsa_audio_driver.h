@@ -75,6 +75,11 @@ class ALSAAudioDriver : public AudioDriver {
   std::atomic<size_t> read_index_{0};
   std::atomic<size_t> write_index_{0};
 
+  // ALSA period and buffer configuration
+  static constexpr snd_pcm_uframes_t kPeriodSize51 = 512;
+  static constexpr snd_pcm_uframes_t kPeriodSizeStereo = 1024;
+  static constexpr size_t kBufferPeriods = 4;
+
   // Conversion buffer
   std::unique_ptr<float[]> conversion_buffer_;
 };

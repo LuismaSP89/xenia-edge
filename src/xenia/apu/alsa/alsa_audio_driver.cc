@@ -29,6 +29,10 @@ ALSAAudioDriver::ALSAAudioDriver(xe::threading::Semaphore* semaphore,
       frame_frequency_(frequency),
       frame_channels_(channels),
       need_format_conversion_(need_format_conversion) {
+  assert_not_null(semaphore);
+  assert_true(frequency > 0 && frequency <= 192000);
+  assert_true(channels == 2 || channels == 6);
+
   switch (frame_channels_) {
     case 6:
       channel_samples_ = 256;
@@ -75,6 +79,10 @@ bool ALSAAudioDriver::Initialize() {
   for (size_t i = 0; i < kRingBufferSize; i++) {
     ring_buffer_[i] =
         reinterpret_cast<float*>(std::aligned_alloc(64, frame_size_));
+    if (!ring_buffer_[i]) {
+      XELOGE("Failed to allocate ring buffer slot {}", i);
+      return false;
+    }
     std::memset(ring_buffer_[i], 0, frame_size_);
   }
 
@@ -86,15 +94,24 @@ bool ALSAAudioDriver::Initialize() {
   // Try to set thread priority for lower latency (non-fatal if it fails)
   pthread_t thread = worker_thread_->native_handle();
   struct sched_param param = {};
-  param.sched_priority = 1;  // Use minimum RT priority (safer)
+  param.sched_priority = 1;
   int res = pthread_setschedparam(thread, SCHED_FIFO, &param);
   if (res != 0) {
     if (res == EPERM) {
-      XELOGI("Cannot set real-time priority - running with normal priority");
+      XELOGI(
+          "Cannot set real-time priority (insufficient permissions). "
+          "Audio will work with normal priority but may have higher latency. "
+          "Consider setting CAP_SYS_NICE capability for better performance.");
+    } else if (res == EINVAL) {
+      XELOGW("Invalid scheduling parameters (priority: {})",
+             param.sched_priority);
+    } else if (res == ESRCH) {
+      XELOGW("Thread not found when setting priority");
     } else {
-      XELOGW("Failed to set thread priority: {}", res);
+      XELOGW("Failed to set thread priority: {} ({})", res, std::strerror(res));
     }
-    // Continue anyway - audio will work, just with potentially higher latency
+  } else {
+    XELOGI("Audio thread running with real-time priority");
   }
 
   return true;
@@ -159,11 +176,9 @@ bool ALSAAudioDriver::SetupAlsaDevice() {
   // Set period size for good balance between latency and stability
   // Use power-of-2 sizes that work well with most hardware
   if (output_channels_ == 6) {
-    // For 5.1, use 512 samples (from 256 base)
-    period_size_ = 512;
+    period_size_ = kPeriodSize51;
   } else {
-    // For stereo, use 1024 samples (from 768 base)
-    period_size_ = 1024;
+    period_size_ = kPeriodSizeStereo;
   }
 
   err = snd_pcm_hw_params_set_period_size_near(pcm_handle_, hw_params_,
@@ -173,9 +188,9 @@ bool ALSAAudioDriver::SetupAlsaDevice() {
     return false;
   }
 
-  // Set buffer size to 4 periods (good balance)
+  // Set buffer size to multiple periods for good balance
   // This gives ~85ms latency at 48kHz which is acceptable for gaming
-  buffer_size_ = period_size_ * 4;
+  buffer_size_ = period_size_ * kBufferPeriods;
   err = snd_pcm_hw_params_set_buffer_size_near(pcm_handle_, hw_params_,
                                                &buffer_size_);
   if (err < 0) {
@@ -231,21 +246,23 @@ bool ALSAAudioDriver::SetupAlsaDevice() {
 void ALSAAudioDriver::SubmitFrame(float* frame) {
   SCOPE_profile_cpu_f("apu");
 
-  // Calculate next write position
-  size_t next_write = (write_index_ + 1) % kRingBufferSize;
+  // Atomically claim a slot in the ring buffer
+  size_t current_write, next_write;
+  do {
+    current_write = write_index_.load(std::memory_order_acquire);
+    next_write = (current_write + 1) % kRingBufferSize;
 
-  // Check if buffer is full
-  if (next_write == read_index_.load()) {
-    // Buffer full - wait or drop frame
-    XELOGW("ALSA ring buffer full, dropping audio frame");
-    return;
-  }
+    // Check if buffer is full
+    if (next_write == read_index_.load(std::memory_order_acquire)) {
+      XELOGW("ALSA ring buffer full, dropping audio frame");
+      return;
+    }
+  } while (!write_index_.compare_exchange_weak(current_write, next_write,
+                                               std::memory_order_release,
+                                               std::memory_order_acquire));
 
-  // Copy frame to ring buffer
-  std::memcpy(ring_buffer_[write_index_], frame, frame_size_);
-
-  // Update write index
-  write_index_ = next_write;
+  // Copy frame to the claimed slot
+  std::memcpy(ring_buffer_[current_write], frame, frame_size_);
 }
 
 void ALSAAudioDriver::WorkerThread() {
@@ -313,10 +330,10 @@ void ALSAAudioDriver::WorkerThread() {
       }
 
       // Apply volume - must handle both sequential and interleaved formats
-      float vol = volume_.load();
+      // Cache volume to ensure consistency across the entire frame
+      float vol = volume_.load(std::memory_order_relaxed);
       if (vol != 1.0f) {
         size_t total_samples = output_channels_ * channel_samples_;
-        // Volume applies the same regardless of layout
         for (size_t i = 0; i < total_samples; i++) {
           output[i] *= vol;
         }
