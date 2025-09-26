@@ -23,7 +23,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          notes: ${{ github.event.head_commit.message }}
         run: |
           asset=xenia_edge_${{ inputs.os }}.zip
           7z a $asset -xr!'*.pdb' -mx9 -bb3
@@ -37,14 +36,15 @@ jobs:
             echo "::error::$asset is too small!"
             exit 1
           fi
+
           create_or_edit_release() {
             local tag=$1
             local title=$2
             if gh release view $tag; then
-              gh release edit $tag -t $title -n "$notes"
+              gh release edit $tag -t $title --generate-notes
               gh release upload $tag $asset --clobber
             else
-              gh release create $tag $asset --target $GITHUB_SHA -t $title -n "$notes"
+              gh release create $tag $asset --target $GITHUB_SHA -t $title --generate-notes
             fi
           }
           tag=${GITHUB_SHA::7}
