@@ -9,6 +9,7 @@
 
 #include "xenia/apu/alsa/alsa_audio_driver.h"
 
+#include <pthread.h>
 #include <cerrno>
 #include <cstring>
 
@@ -124,6 +125,20 @@ bool ALSAAudioDriver::Initialize() {
     }
   } else {
     XELOGI("Audio thread running with real-time priority");
+  }
+
+  // Set CPU affinity to first CPU (like XAudio2) for cache locality
+  cpu_set_t cpuset;
+  CPU_ZERO(&cpuset);
+  CPU_SET(0, &cpuset);  // Pin to CPU 0
+  res = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+  if (res != 0) {
+    XELOGW(
+        "Failed to set CPU affinity: {} ({}). Audio will use default CPU "
+        "scheduling.",
+        res, std::strerror(res));
+  } else {
+    XELOGI("Audio thread pinned to CPU 0 for cache locality");
   }
 
   return true;
