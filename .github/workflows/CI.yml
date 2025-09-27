@@ -40,11 +40,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/cache@main
-        id: cache
-        with:
-          key: ${{ hashFiles('tools/build/bin/premake5.exe') }}
-          path: tools/build/bin/premake5
       - name: Setup
         run: |
           UBUNTU_BASE=$(lsb_release -cs)
@@ -55,10 +50,8 @@ jobs:
           # Verify spirv-opt is available
           which spirv-opt && spirv-opt --version || echo "Warning: spirv-opt not found in PATH"
           git submodule update --init -j$(getconf _NPROCESSORS_ONLN) $(grep -oP '(?<=path = )(?!third_party\/(DirectXShaderCompiler|FidelityFX-(CAS|FSR)|premake-(androidndk|export-compile-commands))).+' .gitmodules)
-          if [ '${{ steps.cache.outputs.cache-hit }}' != 'true' ]; then
-            ./xenia-build.py premake
-            cp third_party/premake-core/bin/release/premake5 tools/build/bin
-          fi
+          ./xenia-build.py premake
+          cp third_party/premake-core/bin/release/premake5 tools/build/bin
       - name: Build
         env:
           CC: clang-20
@@ -103,13 +96,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-vulkan-sdk-
 
-      - name: Cache submodules
-        id: cache-submodules
-        uses: actions/cache@v3
-        with:
-          path: third_party
-          key: ${{ runner.os }}-submodules-${{ hashFiles('.gitmodules') }}
-
       - name: Setup
         run: |
           # Install Vulkan SDK which includes spirv-tools
@@ -133,10 +119,7 @@ jobs:
             echo "Warning: spirv-opt.exe not found at expected location"
           }
 
-          $cacheHit = '${{ steps.cache-submodules.outputs.cache-hit }}'
-          if ($cacheHit -ne 'true') {
-            git submodule update --init -j $env:NUMBER_OF_PROCESSORS (Select-String -CaseSensitive '(?<=path = )(?!third_party\/(FidelityFX-(CAS|FSR)|premake-(androidndk|cmake|export-compile-commands))).+' .gitmodules).Matches.Value
-          }
+          git submodule update --init -j $env:NUMBER_OF_PROCESSORS (Select-String -CaseSensitive '(?<=path = )(?!third_party\/(FidelityFX-(CAS|FSR)|premake-(androidndk|cmake|export-compile-commands))).+' .gitmodules).Matches.Value
 
       - name: Build
         run: python xenia-build.py build --config=Release --target=src\xenia-app
