@@ -1388,6 +1388,20 @@ void Presenter::WaitForUITickFromUIThread() {
     }
     dxgi_ui_tick_signal_condition_.wait(dxgi_ui_tick_lock);
   }
+#elif XE_PLATFORM_LINUX
+  if (!AreUITicksNeededFromUIThread()) {
+    return;
+  }
+  // On Linux, implement timer-based rate limiting at 60 FPS to match game frame
+  // rate.
+  auto now = std::chrono::steady_clock::now();
+  auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+      now - linux_ui_tick_last_paint_time_);
+  constexpr auto frame_time = std::chrono::microseconds(16667);  // ~60 FPS
+  if (elapsed < frame_time) {
+    std::this_thread::sleep_for(frame_time - elapsed);
+  }
+  linux_ui_tick_last_paint_time_ = std::chrono::steady_clock::now();
 #endif  // XE_PLATFORM
 }
 
