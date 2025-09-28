@@ -117,6 +117,13 @@ class VulkanDevice {
 
     bool samplerMirrorClampToEdge = false;
 
+    // VK_KHR_buffer_device_address (promoted to 1.3)
+    // Required for PhysicalStorageBuffer64 memory model
+
+    bool bufferDeviceAddress = false;
+    bool vulkanMemoryModel = false;
+    bool vulkanMemoryModelDeviceScope = false;
+
     // VK_KHR_portability_subset (#164)
 
     bool constantAlphaColorBlendFactors = false;

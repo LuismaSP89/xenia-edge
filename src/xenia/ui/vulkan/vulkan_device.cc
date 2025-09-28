@@ -618,6 +618,10 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
   if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 2, 0)) {
     if (with_gpu_emulation) {
       XE_UI_VULKAN_FEATURE_2(features_1_2, samplerMirrorClampToEdge);
+      // Required for PhysicalStorageBuffer64 memory model
+      XE_UI_VULKAN_FEATURE_2(features_1_2, bufferDeviceAddress);
+      XE_UI_VULKAN_FEATURE_2(features_1_2, vulkanMemoryModel);
+      XE_UI_VULKAN_FEATURE_2(features_1_2, vulkanMemoryModelDeviceScope);
     }
   } else {
     if (ext_1_2_KHR_sampler_mirror_clamp_to_edge) {

@@ -21,7 +21,9 @@ namespace vulkan {
 
 bool SpirvToolsContext::Initialize(unsigned int spirv_version) {
   // Determine target environment based on SPIR-V version
-  if (spirv_version >= 0x10500) {
+  if (spirv_version >= 0x10600) {
+    target_env_ = SPV_ENV_VULKAN_1_3;
+  } else if (spirv_version >= 0x10500) {
     target_env_ = SPV_ENV_VULKAN_1_2;
   } else if (spirv_version >= 0x10400) {
     target_env_ = SPV_ENV_VULKAN_1_1_SPIRV_1_4;

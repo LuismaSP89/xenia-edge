@@ -64,7 +64,9 @@ SpirvShaderTranslator::Features::Features(
       demote_to_helper_invocation(
           vulkan_device->properties().shaderDemoteToHelperInvocation) {
   const uint32_t vulkan_api_version = vulkan_device->properties().apiVersion;
-  if (vulkan_api_version >= VK_MAKE_API_VERSION(0, 1, 2, 0)) {
+  if (vulkan_api_version >= VK_MAKE_API_VERSION(0, 1, 3, 0)) {
+    spirv_version = spv::Spv_1_6;
+  } else if (vulkan_api_version >= VK_MAKE_API_VERSION(0, 1, 2, 0)) {
     spirv_version = spv::Spv_1_5;
   } else if (vulkan_device->extensions().ext_1_2_KHR_spirv_1_4) {
     spirv_version = spv::Spv_1_4;
@@ -168,8 +170,13 @@ void SpirvShaderTranslator::StartTranslation() {
     }
   }
   ext_inst_glsl_std_450_ = builder_->import("GLSL.std.450");
-  builder_->setMemoryModel(spv::AddressingModelLogical,
-                           spv::MemoryModelGLSL450);
+
+  // Use PhysicalStorageBuffer64 memory model
+  builder_->addCapability(spv::Capability::PhysicalStorageBufferAddresses);
+  builder_->addCapability(spv::Capability::VulkanMemoryModel);
+  builder_->setMemoryModel(spv::AddressingModel::PhysicalStorageBuffer64,
+                           spv::MemoryModel::Vulkan);
+
   builder_->setSource(spv::SourceLanguageUnknown, 0);
 
   type_void_ = builder_->makeVoidType();
