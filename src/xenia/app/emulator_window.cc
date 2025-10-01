@@ -2312,12 +2312,12 @@ std::string EmulatorWindow::CanonicalizeFileExtension(
 }
 
 void EmulatorWindow::LaunchTitleInNewProcess(
-    const std::filesystem::path& path_to_file) {
+    const std::filesystem::path& path_to_file, bool for_launch_data) {
   // Get the path to the current executable
   std::filesystem::path executable_path = xe::filesystem::GetExecutablePath();
 
-  // Verify the file exists
-  if (!std::filesystem::exists(path_to_file)) {
+  // Verify the file exists (unless launching for launch_data)
+  if (!for_launch_data && !std::filesystem::exists(path_to_file)) {
     XELOGE("Cannot launch title - file not found: {}", path_to_file.string());
     return;
   }
@@ -2325,7 +2325,6 @@ void EmulatorWindow::LaunchTitleInNewProcess(
 #if XE_PLATFORM_WIN32
   // On Windows, build command line using Xenia's Unicode path handling
   auto exe_path_u16 = xe::path_to_utf16(executable_path);
-  auto game_path_u16 = xe::path_to_utf16(path_to_file);
 
   // Build full command line with quotes for paths that may contain spaces
   std::u16string cmd_line = u"\"" + exe_path_u16 + u"\"";
@@ -2335,8 +2334,11 @@ void EmulatorWindow::LaunchTitleInNewProcess(
     cmd_line += u" --config=\"" + xe::to_utf16(cvars::config) + u"\"";
   }
 
-  // Add the target game file
-  cmd_line += u" \"" + game_path_u16 + u"\"";
+  // Add the target game file (unless launching for launch_data)
+  if (!for_launch_data) {
+    auto game_path_u16 = xe::path_to_utf16(path_to_file);
+    cmd_line += u" \"" + game_path_u16 + u"\"";
+  }
 
   STARTUPINFOW si = {};
   si.cb = sizeof(si);
@@ -2378,9 +2380,12 @@ void EmulatorWindow::LaunchTitleInNewProcess(
       argv.push_back(config_arg.c_str());
     }
 
-    // Add the target game file
-    std::string target_arg = path_to_file.string();
-    argv.push_back(target_arg.c_str());
+    // Add the target game file (unless launching for launch_data)
+    std::string target_arg;
+    if (!for_launch_data) {
+      target_arg = path_to_file.string();
+      argv.push_back(target_arg.c_str());
+    }
     argv.push_back(nullptr);
 
     // Execute the new process
@@ -2398,16 +2403,21 @@ void EmulatorWindow::LaunchTitleInNewProcess(
   child_processes_.push_back(pid);
 #endif
 
-  XELOGI("Launched title in new process: {}", path_to_file.string());
+  if (for_launch_data) {
+    XELOGI("Launched new process for launch_data.bin");
+  } else {
+    XELOGI("Launched title in new process: {}", path_to_file.string());
+  }
 
   // Disable menu items since we have a running child process
   UpdateChildProcessStatus();
 }
 
-bool EmulatorWindow::HasRunningChildProcess() {
+bool EmulatorWindow::HasRunningChildProcess(bool* child_was_reaped) {
   // Simple check: use kill(pid, 0) to see if any child processes are still
   // alive Remove dead processes from our list
   bool has_running = false;
+  bool reaped = false;
 
 #if XE_PLATFORM_WIN32
   for (auto it = child_processes_.begin(); it != child_processes_.end();) {
@@ -2417,6 +2427,7 @@ bool EmulatorWindow::HasRunningChildProcess() {
       ++it;
     } else {
       // Process has exited
+      reaped = true;
       CloseHandle(*it);
       it = child_processes_.erase(it);
     }
@@ -2429,16 +2440,42 @@ bool EmulatorWindow::HasRunningChildProcess() {
       ++it;
     } else {
       // Process doesn't exist anymore
+      reaped = true;
       it = child_processes_.erase(it);
     }
   }
 #endif
 
+  if (child_was_reaped) {
+    *child_was_reaped = reaped;
+  }
+
   return has_running;
 }
 
 void EmulatorWindow::UpdateChildProcessStatus() {
-  bool has_child = HasRunningChildProcess();
+  bool child_was_reaped = false;
+  bool has_child = HasRunningChildProcess(&child_was_reaped);
+
+  // If a child was reaped and no children are running, check for
+  // launch_data.bin
+  if (child_was_reaped && !has_child) {
+    // Use the same logic as XamModule::LoadLoaderData to check for the file
+    FILE* file = xe::filesystem::OpenFile(
+        kernel::xam::kXamModuleLoaderDataFileName, "rb");
+    if (file) {
+      fclose(file);
+      XELOGI(
+          "Child process exited and launch_data.bin exists - launching new "
+          "instance without game argument");
+      // Launch a new instance without the game argument so it can pick up
+      // launch_data.bin
+      LaunchTitleInNewProcess(std::filesystem::path(), true);
+      // Return early - the menu state will be updated when the new child is
+      // detected
+      return;
+    }
+  }
 
   // Enable/disable menu items based on whether a child process is running
   if (file_open_item_) {

@@ -527,8 +527,16 @@ bool EmulatorApp::OnInitialize() {
   emulator_ =
       std::make_unique<Emulator>("", storage_root, content_root, cache_root);
 
-  // Check if this is a game process (has target) or UI process
-  bool is_game_process = !cvars::target.empty();
+  // Check if this is a game process (has target or launch_data.bin) or UI
+  // process
+  bool has_launch_data = false;
+  FILE* launch_data_file =
+      xe::filesystem::OpenFile(kernel::xam::kXamModuleLoaderDataFileName, "rb");
+  if (launch_data_file) {
+    has_launch_data = true;
+    fclose(launch_data_file);
+  }
+  bool is_game_process = !cvars::target.empty() || has_launch_data;
 
   // Determine window size based on process type
   uint32_t window_width, window_height;
@@ -736,11 +744,21 @@ void EmulatorApp::EmulatorThread(bool is_game_process) {
     // Normalize the path and make absolute.
     auto abs_path = std::filesystem::absolute(path);
 
+    // TODO(has207): Add archive format check like in RunTitle?
     result = emulator_->LaunchPath(abs_path);
     if (XFAILED(result)) {
       xe::FatalError(fmt::format("Failed to launch target: {:08X}", result));
       app_context().RequestDeferredQuit();
       return;
+    }
+
+    // Store the host path in loader_data for potential restart with
+    // launch_data.bin
+    auto xam_for_path =
+        emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
+            "xam.xex");
+    if (xam_for_path) {
+      xam_for_path->loader_data().host_path = xe::path_to_utf8(abs_path);
     }
   }
 
