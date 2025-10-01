@@ -121,9 +121,68 @@ vs_version = import_vs_environment()
 
 default_branch = "canary_experimental"
 
+def setup_vulkan_sdk():
+    """Setup Vulkan SDK environment variables if not already set.
+
+    Returns:
+        True if Vulkan SDK is available and valid, False otherwise.
+    """
+    # Check if VULKAN_SDK is already set and valid
+    existing_vulkan_sdk = os.environ.get("VULKAN_SDK")
+    if existing_vulkan_sdk:
+        # Validate that the path exists
+        if os.path.exists(existing_vulkan_sdk):
+            # Check if spirv-opt is accessible
+            if has_bin("spirv-opt"):
+                print(f"VULKAN_SDK is set to {existing_vulkan_sdk}")
+                return True
+            print(f"WARNING: VULKAN_SDK is set to {existing_vulkan_sdk} but spirv-opt not found in PATH")
+        else:
+            print(f"WARNING: VULKAN_SDK is set to {existing_vulkan_sdk} but directory does not exist")
+        return False
+
+    if sys.platform != "win32":
+        # On Linux, find spirv-opt in PATH and set VULKAN_SDK based on its location
+        spirv_opt_path = get_bin("spirv-opt")
+        if spirv_opt_path:
+            # spirv-opt is typically in $VULKAN_SDK/bin/, so get parent directory
+            spirv_bin_dir = os.path.dirname(spirv_opt_path)
+            vulkan_sdk = os.path.dirname(spirv_bin_dir)
+            os.environ["VULKAN_SDK"] = vulkan_sdk
+            print(f"Found Vulkan SDK at {vulkan_sdk} (from spirv-opt location)")
+            return True
+        return False
+
+    # Windows: Check if Vulkan SDK is installed at the default location
+    vulkan_base = "C:\\VulkanSDK"
+    if not os.path.exists(vulkan_base):
+        return False
+
+    # Get the first (latest) version directory
+    try:
+        subdirs = [d for d in os.listdir(vulkan_base)
+                   if os.path.isdir(os.path.join(vulkan_base, d))]
+        if not subdirs:
+            return False
+
+        vulkan_sdk = os.path.join(vulkan_base, subdirs[0])
+        vulkan_bin = os.path.join(vulkan_sdk, "Bin")
+
+        os.environ["VULKAN_SDK"] = vulkan_sdk
+        os.environ["PATH"] = f"{vulkan_bin}{os.pathsep}{os.environ['PATH']}"
+
+        print(f"Found Vulkan SDK at {vulkan_sdk}")
+        return True
+    except Exception:
+        return False
+
+
 def main():
     # Add self to the root search path.
     sys.path.insert(0, self_path)
+
+    # Setup Vulkan SDK and check if available
+    vulkan_sdk_available = setup_vulkan_sdk()
 
     # Augment path to include our fancy things.
     os.environ["PATH"] += os.pathsep + os.pathsep.join([
@@ -149,6 +208,14 @@ def main():
               "\nBuilding for Windows will not be supported."
               " Please refer to the building guide:"
               f"\nhttps://github.com/has207/xenia-edge/blob/{default_branch}/docs/building.md")
+
+    # Check Vulkan SDK availability
+    if not vulkan_sdk_available:
+        print("ERROR: Vulkan SDK not found!"
+              "\nPlease install Vulkan SDK from:"
+              "\nhttps://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe"
+              f"\nSee: https://github.com/has207/xenia-edge/blob/{default_branch}/docs/building.md")
+        sys.exit(1)
 
     # Setup main argument parser and common arguments.
     parser = ArgumentParser(prog="xenia-build.py")
@@ -1021,9 +1088,17 @@ class BuildShadersCommand(Command):
             print("Building Vulkan SPIR-V shaders...")
 
             # Get the SPIR-V tool paths.
-            vulkan_sdk_path = os.environ["VULKAN_SDK"]
+            vulkan_sdk_path = os.environ.get("VULKAN_SDK")
+            if not vulkan_sdk_path:
+                print("ERROR: VULKAN_SDK environment variable is not set")
+                if sys.platform == "win32":
+                    print("Please install Vulkan SDK from:")
+                    print("https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe")
+                else:
+                    print("Please install Vulkan SDK and set VULKAN_SDK environment variable")
+                return 1
             if not os.path.exists(vulkan_sdk_path):
-                print("ERROR: could not find the Vulkan SDK in $VULKAN_SDK")
+                print(f"ERROR: could not find the Vulkan SDK at {vulkan_sdk_path}")
                 return 1
             # bin is lowercase on Linux (even though it's uppercase on Windows).
             vulkan_bin_path = os.path.join(vulkan_sdk_path, "bin")
