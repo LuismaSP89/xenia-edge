@@ -96,6 +96,8 @@ class GTKMenuItem : public MenuItem {
 
   GtkWidget* handle() const { return menu_; }
 
+  void SetEnabled(bool enabled) override;
+
  protected:
   void OnChildAdded(MenuItem* child_item) override;
   void OnChildRemoved(MenuItem* child_item) override;
