@@ -918,23 +918,23 @@ bool EmulatorWindow::Initialize() {
           MenuItem::Create(MenuItem::Type::kString, "Close",
                            std::bind(&EmulatorWindow::FileClose, this)));
 #endif  // #ifdef DEBUG
-    file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-    file_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "Show content directory...",
-        std::bind(&EmulatorWindow::ShowContentDirectory, this)));
-    file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-    file_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "&Configuration Manager",
-                         std::bind(&EmulatorWindow::ShowConfigDialog, this)));
-    file_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "&Manage patches",
-                         std::bind(&EmulatorWindow::ShowPatchesDialog, this)));
-    file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-    file_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "E&xit", "Alt+F4",
-                         [this]() { window_->RequestClose(); }));
-  }
-  main_menu->AddChild(std::move(file_menu));
+      file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+      file_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "Show content directory...",
+          std::bind(&EmulatorWindow::ShowContentDirectory, this)));
+      file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+      file_menu->AddChild(
+          MenuItem::Create(MenuItem::Type::kString, "&Configuration Manager",
+                           std::bind(&EmulatorWindow::ShowConfigDialog, this)));
+      file_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "&Manage patches",
+          std::bind(&EmulatorWindow::ShowPatchesDialog, this)));
+      file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+      file_menu->AddChild(
+          MenuItem::Create(MenuItem::Type::kString, "E&xit", "Alt+F4",
+                           [this]() { window_->RequestClose(); }));
+    }
+    main_menu->AddChild(std::move(file_menu));
 
     // Profile Menu
     auto profile_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Profile");
@@ -1031,32 +1031,32 @@ bool EmulatorWindow::Initialize() {
     }
     main_menu->AddChild(std::move(hid_menu));
 
-  // Help menu.
-  auto help_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Help");
-  {
-    help_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "FA&Q...", "F1",
-                         std::bind(&EmulatorWindow::ShowFAQ, this)));
-    help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-    help_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "Game &compatibility...",
-                         std::bind(&EmulatorWindow::ShowCompatibility, this)));
-    help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-    help_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "Build commit on GitHub...", "F2",
-        std::bind(&EmulatorWindow::ShowBuildCommit, this)));
-    help_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "Recent changes on GitHub...", []() {
-          LaunchWebBrowser(
-              "https://github.com/has207/xenia-edge/"
-              "compare/" XE_BUILD_COMMIT "..." XE_BUILD_BRANCH);
-        }));
-    help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-    help_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&About...",
-        []() { LaunchWebBrowser("https://xenia.jp/about/"); }));
-  }
-  main_menu->AddChild(std::move(help_menu));
+    // Help menu.
+    auto help_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Help");
+    {
+      help_menu->AddChild(
+          MenuItem::Create(MenuItem::Type::kString, "FA&Q...", "F1",
+                           std::bind(&EmulatorWindow::ShowFAQ, this)));
+      help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+      help_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "Game &compatibility...",
+          std::bind(&EmulatorWindow::ShowCompatibility, this)));
+      help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+      help_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "Build commit on GitHub...", "F2",
+          std::bind(&EmulatorWindow::ShowBuildCommit, this)));
+      help_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "Recent changes on GitHub...", []() {
+            LaunchWebBrowser(
+                "https://github.com/has207/xenia-edge/"
+                "compare/" XE_BUILD_COMMIT "..." XE_BUILD_BRANCH);
+          }));
+      help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+      help_menu->AddChild(MenuItem::Create(
+          MenuItem::Type::kString, "&About...",
+          []() { LaunchWebBrowser("https://xenia.jp/about/"); }));
+    }
+    main_menu->AddChild(std::move(help_menu));
 
     window_->SetMainMenu(std::move(main_menu));
 
