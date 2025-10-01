@@ -16,6 +16,7 @@
 #include "xenia/ui/window.h"
 
 #if XE_PLATFORM_WIN32
+#include "xenia/ui/surface_win.h"
 #include "xenia/ui/window_win.h"
 #endif
 
@@ -1208,7 +1209,12 @@ void Presenter::UpdateSurfaceMonitorFromUIThread(
 #if XE_PLATFORM_WIN32
   HMONITOR surface_new_win32_monitor = nullptr;
   if (surface_) {
-    HWND hwnd = static_cast<const Win32Window*>(window_)->hwnd();
+    // Get HWND from the surface instead of assuming Win32Window
+    // This supports both Win32Window and QtWindow
+    HWND hwnd = nullptr;
+    if (surface_->GetType() == Surface::kTypeIndex_Win32Hwnd) {
+      hwnd = static_cast<const Win32HwndSurface*>(surface_)->hwnd();
+    }
     // The HWND may be non-existent if the window has been closed and destroyed
     // (the HWND, not the xe::ui::Window) already.
     if (hwnd) {

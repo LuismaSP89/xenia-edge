@@ -71,22 +71,31 @@ bool QtFilePicker::Show(Window* parent_window) {
 
   auto* qt_window =
       parent_window ? dynamic_cast<QtWindow*>(parent_window) : nullptr;
-  QFileDialog dialog(qt_window ? qt_window->qwindow() : nullptr, title);
-  dialog.setFileMode(file_mode);
-  dialog.setAcceptMode(accept_mode);
 
+  // Use static QFileDialog function to avoid Qt container ABI issues on Windows
+  QString initial_dir;
   if (!initial_directory().empty()) {
-    dialog.setDirectory(QString::fromStdString(initial_directory().string()));
+    std::string dir_str = initial_directory().string();
+    initial_dir = QString::fromUtf8(dir_str.c_str(), static_cast<int>(dir_str.size()));
   }
 
-  if (dialog.exec() == QDialog::Accepted) {
-    QStringList selected = dialog.selectedFiles();
-    if (!selected.isEmpty()) {
-      std::vector<std::filesystem::path> selected_files;
-      selected_files.push_back(xe::to_path(selected[0].toStdString()));
-      set_selected_files(selected_files);
-      return true;
-    }
+  QString file_path = QFileDialog::getOpenFileName(
+      qt_window ? qt_window->qwindow() : nullptr,
+      title,
+      initial_dir,
+      QString(),  // filter
+      nullptr,    // selected filter
+      QFileDialog::DontUseNativeDialog  // Use Qt dialog to avoid native API issues
+  );
+
+  if (!file_path.isEmpty()) {
+    QByteArray utf8_bytes = file_path.toUtf8();
+    std::string file_path_str(utf8_bytes.constData(), utf8_bytes.size());
+
+    std::vector<std::filesystem::path> selected_files;
+    selected_files.push_back(xe::to_path(file_path_str));
+    set_selected_files(selected_files);
+    return true;
   }
 
   return false;
