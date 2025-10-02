@@ -72,13 +72,13 @@ def import_subprocess_environment(args):
                 break
 
 
-VSVERSION_MINIMUM = 2022
+VSVERSION_MINIMUM = 2019
 def import_vs_environment():
     """Finds the installed Visual Studio version and imports
     interesting environment variables into os.environ.
 
     Returns:
-      A version such as 2022 or None if no installation is found.
+      A version such as 2019 or None if no installation is found.
     """
 
     if sys.platform != "win32":
@@ -89,7 +89,7 @@ def import_vs_environment():
     env_tool_args = None
 
     vswhere = subprocess.check_output(
-        "tools/vswhere/vswhere.exe -version \"[17,)\" -latest -prerelease -format json -utf8 -products"
+        "tools/vswhere/vswhere.exe -version \"[16,17)\" -latest -prerelease -format json -utf8 -products"
         " Microsoft.VisualStudio.Product.Enterprise"
         " Microsoft.VisualStudio.Product.Professional"
         " Microsoft.VisualStudio.Product.Community"
@@ -101,6 +101,9 @@ def import_vs_environment():
     if vswhere and len(vswhere) > 0:
         version = int(vswhere[0].get("catalog", {}).get("productLineVersion", VSVERSION_MINIMUM))
         install_path = vswhere[0].get("installationPath", None)
+
+    if not version or not install_path:
+        return None
 
     vsdevcmd_path = os.path.join(install_path, "Common7", "Tools", "VsDevCmd.bat")
     if os.access(vsdevcmd_path, os.X_OK):

@@ -17,11 +17,11 @@ namespace ui {
 namespace d3d12 {
 namespace util {
 
-constexpr D3D12_HEAP_PROPERTIES kHeapPropertiesDefault = {
+const D3D12_HEAP_PROPERTIES kHeapPropertiesDefault = {
     D3D12_HEAP_TYPE_DEFAULT};
-constexpr D3D12_HEAP_PROPERTIES kHeapPropertiesUpload = {
+const D3D12_HEAP_PROPERTIES kHeapPropertiesUpload = {
     D3D12_HEAP_TYPE_UPLOAD};
-constexpr D3D12_HEAP_PROPERTIES kHeapPropertiesReadback = {
+const D3D12_HEAP_PROPERTIES kHeapPropertiesReadback = {
     D3D12_HEAP_TYPE_READBACK};
 
 ID3D12RootSignature* CreateRootSignature(

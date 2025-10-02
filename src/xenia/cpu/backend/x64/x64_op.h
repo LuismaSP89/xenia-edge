@@ -198,8 +198,10 @@ struct ValueOp : Op<ValueOp<T, KEY_TYPE, REG_TYPE, CONST_TYPE>, KEY_TYPE> {
   }
   bool operator==(const T& b) const { return IsEqual(b); }
   bool operator!=(const T& b) const { return !IsEqual(b); }
-  bool operator==(const Xbyak::Reg& b) const { return IsEqual(b); }
-  bool operator!=(const Xbyak::Reg& b) const { return !IsEqual(b); }
+  template <typename U>
+  bool operator==(const U& b) const { return IsEqual(b); }
+  template <typename U>
+  bool operator!=(const U& b) const { return !IsEqual(b); }
   void Load(const Instr::Op& op) {
     value = op.value;
     is_constant = value->IsConstant();

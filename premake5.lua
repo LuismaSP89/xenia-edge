@@ -225,6 +225,8 @@ filter("platforms:Windows")
   toolset("msc")
   buildoptions({
     "/utf-8",   -- 'build correctly on systems with non-Latin codepages'.
+    "/Zc:__cplusplus",   -- Enable correct __cplusplus macro value (required for Qt6).
+    "/Zc:preprocessor",   -- Enable conformant preprocessor (supports #if in macro args).
     -- Disable warnings
     "/wd4201",   -- Nameless struct/unions are ok.
   })
