@@ -16,6 +16,7 @@
 #include <QMenuBar>
 #include <QMouseEvent>
 #include <QResizeEvent>
+#include <QThread>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QWindow>
@@ -46,13 +47,29 @@ class ExternalRenderWidget : public QWidget {
 
     // Enable mouse tracking for ImGui hover
     setMouseTracking(true);
-    setFocusPolicy(Qt::StrongFocus);
+    // Don't accept keyboard focus - let the main window handle keyboard events
+    setFocusPolicy(Qt::NoFocus);
   }
 
   QPaintEngine* paintEngine() const override {
     // Return nullptr to indicate external rendering
     return nullptr;
   }
+
+#if defined(XE_PLATFORM_WIN32)
+  bool nativeEvent(const QByteArray& eventType, void* message,
+                   qintptr* result) override {
+    if (eventType == "windows_generic_MSG") {
+      MSG* msg = static_cast<MSG*>(message);
+      if (msg->message == WM_ERASEBKGND) {
+        // Don't erase background - D3D12 handles all rendering
+        *result = 1;
+        return true;
+      }
+    }
+    return QWidget::nativeEvent(eventType, message, result);
+  }
+#endif
 
  protected:
   void paintEvent(QPaintEvent*) override {
@@ -72,12 +89,14 @@ class ExternalRenderWidget : public QWidget {
     if (window_) {
       window_->OnMousePressEvent(event);
     }
+    event->accept();
   }
 
   void mouseReleaseEvent(QMouseEvent* event) override {
     if (window_) {
       window_->OnMouseReleaseEvent(event);
     }
+    event->accept();
   }
 
   void wheelEvent(QWheelEvent* event) override {
@@ -185,12 +204,17 @@ bool QtWindow::OpenImpl() {
   }
 
   // Ensure native window is created by accessing winId()
+  // This must be done after show() so Qt creates the platform window
   drawing_widget_->winId();
 
   drawing_widget_->setMinimumSize(0, 0);
 
   {
     WindowDestructionReceiver destruction_receiver(this);
+
+    // Notify that the window is on a monitor (required for presenter to paint)
+    MonitorUpdateEvent monitor_event(this, false);
+    OnMonitorUpdate(monitor_event);
 
     OnActualSizeUpdate(uint32_t(drawing_widget_->width()),
                        uint32_t(drawing_widget_->height()),
@@ -300,6 +324,10 @@ std::unique_ptr<Surface> QtWindow::CreateSurfaceImpl(
   if (allowed_types & Surface::kTypeFlag_Win32Hwnd) {
     auto& qt_context = static_cast<const QtWindowedAppContext&>(app_context());
     HWND hwnd = reinterpret_cast<HWND>(drawing_widget_->winId());
+    if (!hwnd || !IsWindow(hwnd)) {
+      XELOGE("CreateSurfaceImpl: Invalid HWND from drawing_widget_->winId()");
+      return nullptr;
+    }
     return std::make_unique<Win32HwndSurface>(qt_context.hinstance(), hwnd);
   }
   return nullptr;
@@ -505,8 +533,8 @@ void QtWindow::OnKeyPressEvent(QKeyEvent* event) {
   OnKeyDown(e, destruction_receiver);
 
   if (!event->text().isEmpty()) {
-    KeyEvent char_event(this, VirtualKey::kNone, event->text()[0].unicode(),
-                        false, event->modifiers() & Qt::ShiftModifier,
+    KeyEvent char_event(this, VirtualKey(event->text()[0].unicode()), 1, false,
+                        event->modifiers() & Qt::ShiftModifier,
                         event->modifiers() & Qt::ControlModifier,
                         event->modifiers() & Qt::AltModifier, false);
     OnKeyChar(char_event, destruction_receiver);
@@ -600,16 +628,31 @@ QtMenuItem::QtMenuItem(Type type, const std::string& text,
                        const std::string& hotkey,
                        std::function<void()> callback)
     : MenuItem(type, text, hotkey, std::move(callback)) {
+  // Ensure Qt application is running before creating Qt objects
+  if (!QCoreApplication::instance()) {
+    // Qt not initialized yet - defer creation
+    return;
+  }
+
+  // Get the active window as parent, or nullptr if none exists yet
+  QWidget* parent = qobject_cast<QWidget*>(QApplication::activeWindow());
+
   if (type == MenuItem::Type::kSeparator) {
-    action_ = new QAction();
+    action_ = new QAction(parent);
     action_->setSeparator(true);
   } else if (type == MenuItem::Type::kPopup) {
-    menu_ = new QMenu(QString::fromStdString(text));
+    QString qtext =
+        QString::fromUtf8(text.c_str(), static_cast<int>(text.size()));
+    menu_ = new QMenu(qtext, parent);
     action_ = menu_->menuAction();
   } else {
-    action_ = new QAction(QString::fromStdString(text));
+    QString qtext =
+        QString::fromUtf8(text.c_str(), static_cast<int>(text.size()));
+    action_ = new QAction(qtext, parent);
     if (!hotkey.empty()) {
-      action_->setShortcut(QKeySequence(QString::fromStdString(hotkey)));
+      QString qhotkey =
+          QString::fromUtf8(hotkey.c_str(), static_cast<int>(hotkey.size()));
+      action_->setShortcut(QKeySequence(qhotkey));
     }
     QObject::connect(action_, &QAction::triggered, action_,
                      [this]() { OnTriggered(); });
