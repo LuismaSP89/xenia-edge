@@ -684,7 +684,7 @@ void ImGuiDrawer::OnKeyUp(KeyEvent& e) { OnKey(e, false); }
 void ImGuiDrawer::OnKeyChar(KeyEvent& e) {
   auto& io = GetIO();
   // TODO(Triang3l): Accept the Unicode character.
-  unsigned int character = static_cast<unsigned int>(e.repeat_count());
+  unsigned int character = static_cast<unsigned int>(e.virtual_key());
   if (character > 0 && character < 0x10000) {
     io.AddInputCharacter(character);
     e.set_handled(true);
