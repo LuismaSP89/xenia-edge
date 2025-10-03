@@ -1070,7 +1070,8 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(
                                      : 0));
   static bool logged_present = false;
   if (!logged_present) {
-    XELOGI("D3D12Presenter: First Present() call, result: 0x{:08X}", present_result);
+    XELOGI("D3D12Presenter: First Present() call, result: 0x{:08X}",
+           present_result);
     logged_present = true;
   }
   // Even if presentation has failed, work might have been enqueued anyway

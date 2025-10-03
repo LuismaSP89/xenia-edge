@@ -76,16 +76,16 @@ bool QtFilePicker::Show(Window* parent_window) {
   QString initial_dir;
   if (!initial_directory().empty()) {
     std::string dir_str = initial_directory().string();
-    initial_dir = QString::fromUtf8(dir_str.c_str(), static_cast<int>(dir_str.size()));
+    initial_dir =
+        QString::fromUtf8(dir_str.c_str(), static_cast<int>(dir_str.size()));
   }
 
   QString file_path = QFileDialog::getOpenFileName(
-      qt_window ? qt_window->qwindow() : nullptr,
-      title,
-      initial_dir,
-      QString(),  // filter
-      nullptr,    // selected filter
-      QFileDialog::DontUseNativeDialog  // Use Qt dialog to avoid native API issues
+      qt_window ? qt_window->qwindow() : nullptr, title, initial_dir,
+      QString(),                        // filter
+      nullptr,                          // selected filter
+      QFileDialog::DontUseNativeDialog  // Use Qt dialog to avoid native API
+                                        // issues
   );
 
   if (!file_path.isEmpty()) {

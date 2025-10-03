@@ -177,12 +177,75 @@ def setup_vulkan_sdk():
         return False
 
 
+def setup_qt():
+    """Setup Qt environment variables if not already set.
+
+    Returns:
+        True if Qt is available and valid, False otherwise.
+    """
+    # Check if QT_DIR is already set and valid
+    existing_qt_dir = os.environ.get("QT_DIR")
+    if existing_qt_dir:
+        # Validate that the path exists
+        if os.path.exists(existing_qt_dir):
+            print(f"QT_DIR is set to {existing_qt_dir}")
+            return True
+        else:
+            print(f"WARNING: QT_DIR is set to {existing_qt_dir} but directory does not exist")
+        return False
+
+    if sys.platform != "win32":
+        # On Linux, check for Qt6 via pkg-config or common install locations
+        return False
+
+    # Windows: Check if Qt is installed at the default location
+    qt_base = "C:\\Qt"
+    if not os.path.exists(qt_base):
+        return False
+
+    # Get the first (latest) version directory
+    try:
+        # List all version directories (e.g., 6.8.1, 6.7.0)
+        version_dirs = [d for d in os.listdir(qt_base)
+                        if os.path.isdir(os.path.join(qt_base, d)) and d[0].isdigit()]
+        if not version_dirs:
+            return False
+
+        # Sort versions to get the latest (simple string sort works for semantic versions)
+        version_dirs.sort(reverse=True)
+        qt_version_dir = os.path.join(qt_base, version_dirs[0])
+
+        # Look for msvc compiler directory (e.g., msvc2022_64, msvc2019_64)
+        compiler_dirs = [d for d in os.listdir(qt_version_dir)
+                         if os.path.isdir(os.path.join(qt_version_dir, d)) and d.startswith("msvc")]
+        if not compiler_dirs:
+            return False
+
+        # Prefer msvc2022_64 if available, otherwise use the first available
+        if "msvc2022_64" in compiler_dirs:
+            compiler_dir = "msvc2022_64"
+        else:
+            compiler_dirs.sort(reverse=True)
+            compiler_dir = compiler_dirs[0]
+
+        qt_dir = os.path.join(qt_version_dir, compiler_dir)
+        os.environ["QT_DIR"] = qt_dir
+
+        print(f"Found Qt at {qt_dir}")
+        return True
+    except Exception:
+        return False
+
+
 def main():
     # Add self to the root search path.
     sys.path.insert(0, self_path)
 
     # Setup Vulkan SDK and check if available
     vulkan_sdk_available = setup_vulkan_sdk()
+
+    # Setup Qt (optional, only needed for Qt-based UI)
+    qt_available = setup_qt()
 
     # Augment path to include our fancy things.
     os.environ["PATH"] += os.pathsep + os.pathsep.join([
@@ -208,14 +271,6 @@ def main():
               "\nBuilding for Windows will not be supported."
               " Please refer to the building guide:"
               f"\nhttps://github.com/has207/xenia-edge/blob/{default_branch}/docs/building.md")
-
-    # Check Vulkan SDK availability
-    if not vulkan_sdk_available:
-        print("ERROR: Vulkan SDK not found!"
-              "\nPlease install Vulkan SDK from:"
-              "\nhttps://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe"
-              f"\nSee: https://github.com/has207/xenia-edge/blob/{default_branch}/docs/building.md")
-        sys.exit(1)
 
     # Setup main argument parser and common arguments.
     parser = ArgumentParser(prog="xenia-build.py")
@@ -631,6 +686,63 @@ def get_build_bin_path(args):
     return os.path.join(self_path, "build", "bin", platform.capitalize(), args["config"].capitalize())
 
 
+def run_windeployqt(bin_path, config):
+    """Runs windeployqt to copy Qt DLLs to the build output directory.
+
+    Args:
+      bin_path: Path to the directory containing the built executable.
+      config: Build configuration (debug, checked, or release).
+
+    Returns:
+      True if windeployqt succeeded or was not needed, False on error.
+    """
+    if sys.platform != "win32":
+        return True
+
+    qt_dir = os.environ.get("QT_DIR")
+    if not qt_dir:
+        # Qt not configured, skip
+        return True
+
+    windeployqt_path = os.path.join(qt_dir, "bin", "windeployqt.exe")
+    if not os.path.exists(windeployqt_path):
+        print(f"WARNING: windeployqt not found at {windeployqt_path}")
+        return True
+
+    # Find the xenia executable
+    exe_path = os.path.join(bin_path, "xenia_edge.exe")
+    if not os.path.exists(exe_path):
+        # Executable not found, might not be building xenia-app
+        return True
+
+    print(f"\n- deploying Qt dependencies to {bin_path}...")
+
+    # Determine if we need debug or release Qt DLLs
+    # Debug and Checked builds need debug Qt DLLs
+    deploy_args = [
+        windeployqt_path,
+        "--no-translations",  # Don't copy translation files
+        "--no-system-d3d-compiler",  # Don't copy D3D compiler
+        "--no-opengl-sw",  # Don't copy software OpenGL renderer
+    ]
+
+    if config.lower() in ["debug", "checked"]:
+        deploy_args.append("--debug")
+    else:
+        deploy_args.append("--release")
+
+    deploy_args.append(exe_path)
+
+    result = subprocess.call(deploy_args)
+
+    if result == 0:
+        print("  Qt dependencies deployed successfully")
+        return True
+    else:
+        print(f"WARNING: windeployqt failed with exit code {result}")
+        return False
+
+
 def create_clion_workspace():
     """Creates some basic workspace information inside the .idea directory for first start.
     """
@@ -871,6 +983,14 @@ class BaseBuildCommand(Command):
             help="Skips running premake before building.")
 
     def execute(self, args, pass_args, cwd):
+        # Check Vulkan SDK availability
+        if not os.environ.get("VULKAN_SDK"):
+            print("ERROR: Vulkan SDK not found!"
+                  "\nPlease install Vulkan SDK from:"
+                  "\nhttps://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe"
+                  f"\nSee: https://github.com/has207/xenia-edge/blob/{default_branch}/docs/building.md")
+            return 1
+
         if not args["no_premake"]:
             print("- running premake...")
             run_platform_premake(cc=args["cc"])
@@ -951,6 +1071,10 @@ class BuildCommand(BaseBuildCommand):
         result = super(BuildCommand, self).execute(args, pass_args, cwd)
 
         if not result:
+            # Run windeployqt to copy Qt DLLs
+            bin_path = get_build_bin_path(args)
+            run_windeployqt(bin_path, args["config"])
+
             print(f"{bcolors.OKCYAN}Success!{bcolors.ENDC}")
         else:
             print(f"{bcolors.FAIL}Failed!{bcolors.ENDC}")

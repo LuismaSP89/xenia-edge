@@ -533,8 +533,8 @@ void QtWindow::OnKeyPressEvent(QKeyEvent* event) {
   OnKeyDown(e, destruction_receiver);
 
   if (!event->text().isEmpty()) {
-    KeyEvent char_event(this, VirtualKey(event->text()[0].unicode()), 1,
-                        false, event->modifiers() & Qt::ShiftModifier,
+    KeyEvent char_event(this, VirtualKey(event->text()[0].unicode()), 1, false,
+                        event->modifiers() & Qt::ShiftModifier,
                         event->modifiers() & Qt::ControlModifier,
                         event->modifiers() & Qt::AltModifier, false);
     OnKeyChar(char_event, destruction_receiver);
@@ -641,14 +641,17 @@ QtMenuItem::QtMenuItem(Type type, const std::string& text,
     action_ = new QAction(parent);
     action_->setSeparator(true);
   } else if (type == MenuItem::Type::kPopup) {
-    QString qtext = QString::fromUtf8(text.c_str(), static_cast<int>(text.size()));
+    QString qtext =
+        QString::fromUtf8(text.c_str(), static_cast<int>(text.size()));
     menu_ = new QMenu(qtext, parent);
     action_ = menu_->menuAction();
   } else {
-    QString qtext = QString::fromUtf8(text.c_str(), static_cast<int>(text.size()));
+    QString qtext =
+        QString::fromUtf8(text.c_str(), static_cast<int>(text.size()));
     action_ = new QAction(qtext, parent);
     if (!hotkey.empty()) {
-      QString qhotkey = QString::fromUtf8(hotkey.c_str(), static_cast<int>(hotkey.size()));
+      QString qhotkey =
+          QString::fromUtf8(hotkey.c_str(), static_cast<int>(hotkey.size()));
       action_->setShortcut(QKeySequence(qhotkey));
     }
     QObject::connect(action_, &QAction::triggered, action_,

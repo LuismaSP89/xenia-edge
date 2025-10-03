@@ -148,8 +148,6 @@ jobs:
             pip install aqtinstall
             aqt install-qt windows desktop 6.8.1 win64_msvc2022_64 -O C:\Qt
           }
-          $env:QT_DIR = "C:\Qt\6.8.1\msvc2022_64"
-          echo "QT_DIR=$env:QT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
           $cacheHit = '${{ steps.cache-submodules.outputs.cache-hit }}'
           if ($cacheHit -ne 'true') {
@@ -166,8 +164,9 @@ jobs:
               echo "::error::$file is too small."
             }
           }
-          robocopy . build\bin\Windows\Release                                                                LICENSE /r:0 /w:0
-          robocopy   build\bin\Windows\Release artifacts\xenia_edge   xenia_edge.exe   xenia_edge.pdb   LICENSE /r:0 /w:0
+          robocopy . build\bin\Windows\Release LICENSE /r:0 /w:0
+          # Copy all files and directories (Qt DLLs, plugins, etc.) excluding build artifacts
+          robocopy build\bin\Windows\Release artifacts\xenia_edge /MIR /r:0 /w:0 /XF *.lib *.idb *.exp /XD generic iconengines imageformats networkinformation styles tls
           If ($LastExitCode -le 7) { echo "LastExitCode = $LastExitCode";$LastExitCode = 0 }
       - name: Upload xenia edge artifacts
         if: steps.prepare_artifacts.outcome == 'success'
