@@ -66,6 +66,7 @@ const std::map<std::string, std::vector<std::string>>& GetKnownEnumOptions() {
       {"apu", {"any", "nop", "sdl"}},
       {"hid", {"any", "nop", "sdl"}},
 #endif
+      {"vsync", {"auto", "on", "off"}},
       {"d3d12_readback_resolve",
        {"kCopy", "kComputeLuminance", "kComputeRGBA16"}},
       {"render_target_path_d3d12", {"any", "rtvfull", "rtvsingle"}},

@@ -110,7 +110,16 @@ void ReadConfig(const std::filesystem::path& file_path,
 
     const auto config_key_node = config.at_path(config_key);
     if (config_key_node) {
-      config_var->LoadConfigValue(config_key_node.node());
+      try {
+        config_var->LoadConfigValue(config_key_node.node());
+      } catch (const std::bad_optional_access&) {
+        // Type mismatch between config file and cvar definition
+        // (e.g., bool -> string). Ignore and use default value.
+        XELOGW(
+            "Failed to load config value for '{}': type mismatch, using "
+            "default",
+            config_var->name());
+      }
     }
   }
   uint32_t config_defaults_date = defaults_date_cvar->GetTypedConfigValue();

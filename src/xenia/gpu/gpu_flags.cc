@@ -18,7 +18,11 @@ DEFINE_path(
     "For shader debugging, path to dump GPU shaders to as they are compiled.",
     "GPU");
 
-DEFINE_bool(vsync, true, "Enable VSYNC.", "GPU");
+DEFINE_string(vsync, "auto",
+              "VSync behavior: 'on' = always enabled, 'off' = always disabled, "
+              "'auto' = automatically adapt based on game's frame pacing "
+              "(disables vsync when game limits to 30fps, enables at 60fps).",
+              "GPU");
 
 DEFINE_uint64(framerate_limit, 0,
               "Maximum frames per second. 0 = Unlimited frames.\n"

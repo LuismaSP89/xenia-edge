@@ -9,6 +9,10 @@
 
 #include "xenia/gpu/graphics_system.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+
 #include "xenia/base/byte_stream.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
@@ -62,6 +66,93 @@ DEFINE_bool(
 
 namespace xe {
 namespace gpu {
+
+void FramePaceDetector::RecordSwap(uint64_t timestamp_ns) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  if (last_swap_time_ != 0) {
+    uint64_t frame_time = timestamp_ns - last_swap_time_;
+
+    // Ignore unreasonably long frames (loading screens, pauses, etc.)
+    if (frame_time <= kMaxFrameTimeNs) {
+      frame_times_[current_index_] = frame_time;
+      current_index_ = (current_index_ + 1) % kHistorySize;
+      valid_samples_ = std::min(valid_samples_ + 1, kHistorySize);
+    }
+  }
+
+  last_swap_time_ = timestamp_ns;
+}
+
+FramePaceDetector::DetectedPacing FramePaceDetector::GetDetectedPacing() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  // Need enough samples to make a determination
+  if (valid_samples_ < kMinSamplesForDetection) {
+    return DetectedPacing::kVariable;
+  }
+
+  // Calculate average frame time
+  uint64_t total_time = 0;
+  size_t samples_to_check = std::min(valid_samples_, kHistorySize);
+  for (size_t i = 0; i < samples_to_check; ++i) {
+    total_time += frame_times_[i];
+  }
+  uint64_t avg_frame_time = total_time / samples_to_check;
+
+  // Check variance to determine consistency
+  uint64_t variance_sum = 0;
+  for (size_t i = 0; i < samples_to_check; ++i) {
+    int64_t diff = static_cast<int64_t>(frame_times_[i]) -
+                   static_cast<int64_t>(avg_frame_time);
+    variance_sum += diff * diff;
+  }
+  uint64_t variance = variance_sum / samples_to_check;
+  uint64_t std_dev = static_cast<uint64_t>(std::sqrt(variance));
+
+  // If standard deviation is too high, consider it variable
+  // Allow ~5ms variance for consistent pacing
+  if (std_dev > 5'000'000) {
+    return DetectedPacing::kVariable;
+  }
+
+  // Classify based on average frame time
+  // Simple: 30fps range or faster than 30fps
+  if (avg_frame_time >= 25'000'000 && avg_frame_time <= k30FpsThresholdNs) {
+    // Between 25ms and 36ms is considered 30fps
+    return DetectedPacing::k30fps;
+  } else if (avg_frame_time < 25'000'000) {
+    // Faster than 30fps (includes 60fps and uncapped) - enable vsync
+    return DetectedPacing::k60fps;
+  }
+
+  return DetectedPacing::kVariable;
+}
+
+float FramePaceDetector::GetAverageFrameTimeMs() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  if (valid_samples_ == 0) {
+    return 0.0f;
+  }
+
+  uint64_t total_time = 0;
+  size_t samples_to_check = std::min(valid_samples_, kHistorySize);
+  for (size_t i = 0; i < samples_to_check; ++i) {
+    total_time += frame_times_[i];
+  }
+
+  return static_cast<float>(total_time) / static_cast<float>(samples_to_check) /
+         1'000'000.0f;
+}
+
+void FramePaceDetector::Reset() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  current_index_ = 0;
+  valid_samples_ = 0;
+  last_swap_time_ = 0;
+  frame_times_.fill(0);
+}
 
 // Nvidia Optimus/AMD PowerXpress support.
 // These exports force the process to trigger the discrete GPU in multi-GPU
@@ -152,13 +243,28 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
             uint64_t normalized_framerate_limit =
                 std::max<uint64_t>(0, cvars::framerate_limit);
 
+            // Determine vsync behavior from string setting
+            bool vsync_enabled = false;
+            bool vsync_adaptive = false;
+            std::string vsync_mode = cvars::vsync;
+            std::transform(vsync_mode.begin(), vsync_mode.end(),
+                           vsync_mode.begin(), ::tolower);
+            if (vsync_mode == "on") {
+              vsync_enabled = true;
+            } else if (vsync_mode == "auto") {
+              vsync_adaptive = true;
+              vsync_enabled =
+                  false;  // Start disabled, adapt based on detection
+            }
+            // else vsync_mode == "off", both remain false
+
             // If VSYNC is enabled, but frames are not limited,
             // lock framerate at default value of 60
-            if (normalized_framerate_limit == 0 && cvars::vsync)
+            if (normalized_framerate_limit == 0 && vsync_enabled)
               normalized_framerate_limit = 60;
 
-            const double vsync_duration_d =
-                cvars::vsync
+            double vsync_duration_d =
+                vsync_enabled
                     ? std::max<double>(5.0,
                                        1000.0 / static_cast<double>(
                                                     normalized_framerate_limit))
@@ -173,12 +279,105 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
             constexpr double duration_scalar = 1.0;
 #endif
 
+            // Track last detected pacing to log transitions
+            static FramePaceDetector::DetectedPacing last_detected_pacing =
+                FramePaceDetector::DetectedPacing::kVariable;
+
             while (frame_limiter_worker_running_) {
+              // Record frame timing for adaptive vsync (done here to avoid
+              // overhead on swap path)
+              if (vsync_adaptive) {
+                const uint64_t current_time = Clock::QueryGuestTickCount();
+                const uint64_t tick_freq = Clock::guest_tick_frequency();
+                // Convert to nanoseconds
+                const uint64_t timestamp_ns =
+                    (current_time * 1'000'000'000ULL) / tick_freq;
+                frame_pace_detector_.RecordSwap(timestamp_ns);
+              }
+
+              // Adaptive vsync: check detected frame pacing and adjust
+              if (vsync_adaptive) {
+                auto detected_pacing = frame_pace_detector_.GetDetectedPacing();
+
+                // Log when pacing changes
+                bool pacing_changed = (detected_pacing != last_detected_pacing);
+
+                if (detected_pacing ==
+                    FramePaceDetector::DetectedPacing::k30fps) {
+                  // Game is self-limiting to 30fps, disable vsync AND framerate
+                  // limit
+                  bool state_changed =
+                      vsync_enabled || (normalized_framerate_limit != 0);
+                  if (vsync_enabled) {
+                    vsync_enabled = false;
+                  }
+                  if (normalized_framerate_limit != 0) {
+                    normalized_framerate_limit = 0;
+                  }
+                  if (state_changed || pacing_changed) {
+                    float avg_frame_time =
+                        frame_pace_detector_.GetAverageFrameTimeMs();
+                    XELOGI(
+                        "Adaptive VSync: Detected 30fps pacing ({:.2f}ms avg), "
+                        "disabling vsync (game is self-limiting) "
+                        "[vsync_enabled={}, normalized_framerate_limit={}, "
+                        "vsync_duration_d={:.2f}]",
+                        avg_frame_time, vsync_enabled,
+                        normalized_framerate_limit, vsync_duration_d);
+                  }
+                } else if (detected_pacing ==
+                           FramePaceDetector::DetectedPacing::k60fps) {
+                  // Game running at 60fps or faster, enable vsync
+                  bool state_changed = !vsync_enabled;
+                  if (!vsync_enabled) {
+                    vsync_enabled = true;
+                    normalized_framerate_limit = 60;
+                    vsync_duration_d = std::max<double>(5.0, 1000.0 / 60.0);
+                  }
+                  if (state_changed || pacing_changed) {
+                    float avg_frame_time =
+                        frame_pace_detector_.GetAverageFrameTimeMs();
+                    XELOGI(
+                        "Adaptive VSync: Detected 60fps+ pacing ({:.2f}ms "
+                        "avg), enabling vsync @ 60fps [vsync_enabled={}, "
+                        "normalized_framerate_limit={}, "
+                        "vsync_duration_d={:.2f}]",
+                        avg_frame_time, vsync_enabled,
+                        normalized_framerate_limit, vsync_duration_d);
+                  }
+                } else if (detected_pacing ==
+                           FramePaceDetector::DetectedPacing::kVariable) {
+                  // Variable frame rate detected, game is struggling - disable
+                  // vsync
+                  bool state_changed =
+                      vsync_enabled || (normalized_framerate_limit != 0);
+                  if (vsync_enabled) {
+                    vsync_enabled = false;
+                  }
+                  if (normalized_framerate_limit != 0) {
+                    normalized_framerate_limit = 0;
+                  }
+                  if (state_changed || pacing_changed) {
+                    float avg_frame_time =
+                        frame_pace_detector_.GetAverageFrameTimeMs();
+                    XELOGI(
+                        "Adaptive VSync: Detected variable pacing ({:.2f}ms "
+                        "avg), disabling vsync (game is struggling) "
+                        "[vsync_enabled={}, normalized_framerate_limit={}, "
+                        "vsync_duration_d={:.2f}]",
+                        avg_frame_time, vsync_enabled,
+                        normalized_framerate_limit, vsync_duration_d);
+                  }
+                }
+
+                last_detected_pacing = detected_pacing;
+              }
+
               register_file()->values[XE_GPU_REG_D1MODE_V_COUNTER] +=
                   GetInternalDisplayResolution().second;
 
 #if XE_PLATFORM_WIN32
-              if (cvars::vsync) {
+              if (vsync_enabled) {
                 const uint64_t current_time = Clock::QueryGuestTickCount();
                 const uint64_t tick_freq = Clock::guest_tick_frequency();
                 const uint64_t time_delta = current_time - last_frame_time;
@@ -197,7 +396,7 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
                 }
               }
 
-              if (!cvars::vsync) {
+              if (!vsync_enabled) {
                 MarkVblank();
                 if (normalized_framerate_limit > 0) {
                   // framerate_limit is over 0, vsync disabled
@@ -216,10 +415,10 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
               // Linux: Use simplified timing logic to avoid oversleeping
               MarkVblank();
 
-              if (cvars::vsync || normalized_framerate_limit > 0) {
+              if (vsync_enabled || normalized_framerate_limit > 0) {
                 uint64_t sleep_duration_ns =
                     static_cast<uint64_t>(vsync_duration_d * 1000000.0);
-                if (!cvars::vsync && normalized_framerate_limit > 0) {
+                if (!vsync_enabled && normalized_framerate_limit > 0) {
                   sleep_duration_ns = 1000000000 / normalized_framerate_limit;
                 }
                 threading::NanoSleep(sleep_duration_ns);
