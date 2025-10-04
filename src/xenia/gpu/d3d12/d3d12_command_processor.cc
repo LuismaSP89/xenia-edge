@@ -2167,6 +2167,10 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
                                       uint32_t frontbuffer_height) {
   SCOPE_profile_cpu_f("gpu");
 
+  // Record swap timing for adaptive vsync
+  graphics_system_->frame_pace_detector()->RecordSwap(
+      xe::Clock::QueryHostUptimeMillis() * 1'000'000);
+
   ui::Presenter* presenter = graphics_system_->presenter();
   if (!presenter) {
     return;

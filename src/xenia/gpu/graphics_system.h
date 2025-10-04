@@ -10,6 +10,7 @@
 #ifndef XENIA_GPU_GRAPHICS_SYSTEM_H_
 #define XENIA_GPU_GRAPHICS_SYSTEM_H_
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -42,6 +43,54 @@ inline const std::vector<std::pair<uint16_t, uint16_t>>
         {1920, 540}, {1920, 1080}};
 
 class CommandProcessor;
+
+// Detects the game's internal frame pacing to enable adaptive vsync strategy
+// Adaptive VSync Strategy:
+// - Tracks the last 60 frame times to detect game's internal frame pacing
+// - Detects two modes: 30fps (25-36ms) and 60fps+ (<25ms)
+// - 30fps games: Disable vsync and framerate limiting (game self-limits)
+// - 60fps+ games: Enable vsync @ 60fps for smooth display synchronization
+// - Helps reduce latency/stutter in 30fps games and effectively caps
+//   games running at 60+ to 60fps without per-game configuration
+class FramePaceDetector {
+ public:
+  static constexpr size_t kHistorySize = 60;
+  // Threshold for considering a frame as 60fps (~18ms with some tolerance)
+  static constexpr uint64_t k60FpsThresholdNs = 18'000'000;
+  // Threshold for considering a frame as 30fps (~36ms with some tolerance)
+  static constexpr uint64_t k30FpsThresholdNs = 36'000'000;
+  // Minimum samples needed before making a detection
+  static constexpr size_t kMinSamplesForDetection = 30;
+  // Maximum frame time to consider (filter out loading screens, etc.)
+  static constexpr uint64_t kMaxFrameTimeNs = 100'000'000;  // 100ms
+
+  enum class DetectedPacing {
+    k60fps,     // Running at 60fps or faster (enable vsync)
+    k30fps,     // Running at ~30fps (disable vsync)
+    kVariable,  // No clear pattern or insufficient data
+  };
+
+  FramePaceDetector() = default;
+
+  // Record a new swap event with its timestamp
+  void RecordSwap(uint64_t timestamp_ns);
+
+  // Get the current detected pacing mode
+  DetectedPacing GetDetectedPacing() const;
+
+  // Get the average frame time in milliseconds
+  float GetAverageFrameTimeMs() const;
+
+  // Reset the detector (e.g., on game state changes)
+  void Reset();
+
+ private:
+  std::array<uint64_t, kHistorySize> frame_times_{};
+  size_t current_index_ = 0;
+  size_t valid_samples_ = 0;
+  uint64_t last_swap_time_ = 0;
+  mutable std::mutex mutex_;
+};
 
 class GraphicsSystem {
  public:
@@ -103,6 +152,8 @@ class GraphicsSystem {
     scaled_aspect_y_ = y;
   };
 
+  FramePaceDetector* frame_pace_detector() { return &frame_pace_detector_; }
+
  protected:
   GraphicsSystem();
 
@@ -136,6 +187,8 @@ class GraphicsSystem {
 
   uint32_t scaled_aspect_x_ = 0;
   uint32_t scaled_aspect_y_ = 0;
+
+  FramePaceDetector frame_pace_detector_;
 
  private:
   std::unique_ptr<ui::Presenter> presenter_;

@@ -16,7 +16,7 @@ DECLARE_bool(trace_gpu_stream);
 
 DECLARE_path(dump_shaders);
 
-DECLARE_bool(vsync);
+DECLARE_string(vsync);
 
 DECLARE_uint64(framerate_limit);
 
