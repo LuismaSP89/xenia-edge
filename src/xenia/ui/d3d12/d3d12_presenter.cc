@@ -15,6 +15,7 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
+#include "xenia/gpu/gpu_flags.h"
 #include "xenia/ui/d3d12/d3d12_provider.h"
 #include "xenia/ui/d3d12/d3d12_util.h"
 #include "xenia/ui/surface_win.h"
@@ -220,7 +221,7 @@ D3D12Presenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
     if (was_paintable &&
         paint_context_.swap_chain_width == new_swap_chain_width &&
         paint_context_.swap_chain_height == new_swap_chain_height) {
-      is_vsync_implicit_out = false;
+      is_vsync_implicit_out = cvars::vsync;
       return SurfacePaintConnectResult::kSuccessUnchanged;
     }
     paint_context_.AwaitSwapChainUsageCompletion();
@@ -361,7 +362,7 @@ D3D12Presenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
             rtv_heap_start, PaintContext::kRTVIndexSwapChainBuffer0 + i));
   }
 
-  is_vsync_implicit_out = false;
+  is_vsync_implicit_out = cvars::vsync;
   return SurfacePaintConnectResult::kSuccess;
 }
 
@@ -1056,18 +1057,19 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(
     ui_submission_tracker_.NextSubmission();
   }
   paint_context_.paint_submission_tracker.NextSubmission();
-  // Present as soon as possible, without waiting for vsync (the host refresh
-  // rate may be something like 144 Hz, which is not a multiple of the common
-  // 30 Hz or 60 Hz guest refresh rate), and allowing dropping outdated queued
-  // frames for lower latency. Also, if possible, allowing tearing to use
-  // variable refresh rate in borderless fullscreen (note that if DXGI
-  // fullscreen is ever used in, the allow tearing flag must not be passed in
-  // fullscreen, but DXGI fullscreen is largely unneeded with the flip
-  // presentation model used in Direct3D 12).
-  HRESULT present_result = paint_context_.swap_chain->Present(
-      0, DXGI_PRESENT_RESTART | (paint_context_.swap_chain_allows_tearing
-                                     ? DXGI_PRESENT_ALLOW_TEARING
-                                     : 0));
+  // Respect the vsync setting. When vsync is disabled, present as soon as
+  // possible without waiting for vblank (the host refresh rate may be something
+  // like 144 Hz, which is not a multiple of the common 30 Hz or 60 Hz guest
+  // refresh rate), and allow tearing for variable refresh rate in borderless
+  // fullscreen. When vsync is enabled, sync to vblank. Note that
+  // DXGI_PRESENT_ALLOW_TEARING cannot be used with SyncInterval > 0.
+  UINT sync_interval = cvars::vsync ? 1 : 0;
+  DWORD present_flags = DXGI_PRESENT_RESTART;
+  if (sync_interval == 0 && paint_context_.swap_chain_allows_tearing) {
+    present_flags |= DXGI_PRESENT_ALLOW_TEARING;
+  }
+  HRESULT present_result =
+      paint_context_.swap_chain->Present(sync_interval, present_flags);
   static bool logged_present = false;
   if (!logged_present) {
     XELOGI("D3D12Presenter: First Present() call, result: 0x{:08X}",
