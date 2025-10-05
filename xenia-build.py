@@ -730,6 +730,12 @@ def run_windeployqt(bin_path, config):
         deploy_args.append("--debug")
     else:
         deploy_args.append("--release")
+        # For release builds, only copy essential plugin directories
+        deploy_args.extend([
+            "--no-quick-import",
+            "--no-translations",
+            "--plugindir", os.path.join(bin_path, "platforms"),
+        ])
 
     deploy_args.append(exe_path)
 
