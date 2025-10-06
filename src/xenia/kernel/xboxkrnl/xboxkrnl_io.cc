@@ -86,6 +86,9 @@ dword_result_t NtCreateFile_entry(lpdword_t handle_out, dword_t desired_access,
       (create_options & CreateOptions::FILE_DIRECTORY_FILE) != 0,
       (create_options & CreateOptions::FILE_NON_DIRECTORY_FILE) != 0, &vfs_file,
       &file_action);
+
+  XELOGI("NtCreateFile: path='{}', disposition={}, access=0x{:08X}, result=0x{:08X}",
+         target_path, uint32_t(creation_disposition), uint32_t(desired_access), uint32_t(result));
   object_ref<XFile> file = nullptr;
 
   X_HANDLE handle = X_INVALID_HANDLE_VALUE;
@@ -144,10 +147,14 @@ dword_result_t NtReadFile_entry(dword_t file_handle, dword_t event_handle,
     if (true || file->is_synchronous()) {
       // Synchronous.
       uint32_t bytes_read = 0;
+      uint64_t offset = byte_offset_ptr ? static_cast<uint64_t>(*byte_offset_ptr) : -1;
+      XELOGI("NtReadFile: handle=0x{:08X}, path='{}', offset=0x{:X}, length=0x{:X}",
+             uint32_t(file_handle), file->entry() ? file->entry()->absolute_path() : "unknown",
+             offset, uint32_t(buffer_length));
       result = file->Read(
-          buffer.guest_address(), buffer_length,
-          byte_offset_ptr ? static_cast<uint64_t>(*byte_offset_ptr) : -1,
+          buffer.guest_address(), buffer_length, offset,
           &bytes_read, apc_context);
+      XELOGI("NtReadFile: result=0x{:08X}, bytes_read=0x{:X}", uint32_t(result), bytes_read);
       if (io_status_block) {
         io_status_block->status = result;
         io_status_block->information = bytes_read;

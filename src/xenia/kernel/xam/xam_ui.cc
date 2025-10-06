@@ -569,6 +569,7 @@ dword_result_t XamShowDeviceSelectorUI_entry(
 DECLARE_XAM_EXPORT1(XamShowDeviceSelectorUI, kUI, kImplemented);
 
 void XamShowDirtyDiscErrorUI_entry(dword_t user_index) {
+  XELOGI("XamShowDirtyDiscErrorUI called by game - disc read error detected!");
   if (cvars::headless) {
     assert_always();
     exit(1);
