@@ -1097,10 +1097,22 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
           xenos::IsMajorModeExplicit(vgt_draw_initiator.major_mode,
                                      vgt_draw_initiator.prim_type));
       if (!draw_succeeded) {
-        XELOGE("{}({}, {}, {}): Failed in backend", opcode_name,
-               vgt_draw_initiator.num_indices,
-               uint32_t(vgt_draw_initiator.prim_type),
-               uint32_t(vgt_draw_initiator.source_select));
+        auto rb_surface_info = register_file_->Get<reg::RB_SURFACE_INFO>();
+        auto pa_su_sc_mode_cntl =
+            register_file_->Get<reg::PA_SU_SC_MODE_CNTL>();
+        auto rb_modecontrol = register_file_->Get<reg::RB_MODECONTROL>();
+        XELOGE(
+            "{}(indices={}, prim_type={}, src_sel={}, indexed={}, "
+            "major_mode={}): Failed in backend - surface_pitch={}, msaa={}, "
+            "edram_mode={}, cull_front={}, cull_back={}",
+            opcode_name, vgt_draw_initiator.num_indices,
+            uint32_t(vgt_draw_initiator.prim_type),
+            uint32_t(vgt_draw_initiator.source_select), is_indexed,
+            uint32_t(vgt_draw_initiator.major_mode),
+            rb_surface_info.surface_pitch,
+            uint32_t(rb_surface_info.msaa_samples),
+            uint32_t(rb_modecontrol.edram_mode), pa_su_sc_mode_cntl.cull_front,
+            pa_su_sc_mode_cntl.cull_back);
       }
     }
   }

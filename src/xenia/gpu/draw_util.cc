@@ -1052,12 +1052,25 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
            xenos::kMaxResolveSize);
     y1 = y0 + int32_t(xenos::kMaxResolveSize);
   }
-  // fails in forza horizon 1
-  // x0 is 0, x1 is 0x100, y0 is 0x100, y1 is 0x100
-  assert_true(x0 <= x1 && y0 <= y1);
+  // Handle empty resolve regions as a successful no-op rather than an error.
+  // This can happen legitimately when:
+  // 1. Window offsets push the resolve region completely out of bounds
+  // 2. Tiled rendering results in boundary tiles with no pixels to resolve
+  // 3. Scissor clipping eliminates the entire region
+  // Both render target caches check width_div_8/height_div_8 and early-return
+  // success for empty regions, so we should do the same here.
+  // Note: This was failing in Forza Horizon 1 and causing rendering artifacts.
   if (x0 >= x1 || y0 >= y1) {
-    XELOGE("Resolve region is empty");
-    return false;
+    XELOGW(
+        "Resolve region is empty (treating as no-op): x=[{}, {}), y=[{}, {}), "
+        "scissor=[{},{} {}x{}], window_offset=[{},{}]",
+        x0, x1, y0, y1, scissor.offset[0], scissor.offset[1], scissor.extent[0],
+        scissor.extent[1], pa_sc_window_offset.window_x_offset,
+        pa_sc_window_offset.window_y_offset);
+    // Set dimensions to 0 so callers can detect this is a no-op.
+    info_out.coordinate_info.width_div_8 = 0;
+    info_out.height_div_8 = 0;
+    return true;
   }
 
   info_out.coordinate_info.width_div_8 =
