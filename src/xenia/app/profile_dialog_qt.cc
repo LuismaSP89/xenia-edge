@@ -11,6 +11,7 @@
 
 #include <QHBoxLayout>
 #include <QImage>
+#include <QInputDialog>
 #include <QMenu>
 #include <QMessageBox>
 
@@ -386,9 +387,55 @@ void ProfileDialogQt::OnProfileContextMenu(const QPoint& pos) {
 }
 
 void ProfileDialogQt::OnCreateProfileClicked() {
-  // TODO: Implement create profile UI
-  QMessageBox::information(this, "Create Profile",
-                           "Profile creation UI not yet implemented in Qt.");
+  if (!emulator_window_ || !emulator_window_->emulator()) {
+    return;
+  }
+
+  auto kernel_state = emulator_window_->emulator()->kernel_state();
+  if (!kernel_state) {
+    return;
+  }
+
+  auto xam_state = kernel_state->xam_state();
+  if (!xam_state) {
+    return;
+  }
+
+  auto profile_manager = xam_state->profile_manager();
+  if (!profile_manager) {
+    return;
+  }
+
+  // Prompt for gamertag
+  bool ok;
+  QString gamertag = QInputDialog::getText(
+      this, "Create Profile",
+      "Enter gamertag (3-15 characters):", QLineEdit::Normal, "", &ok);
+
+  if (!ok || gamertag.isEmpty()) {
+    return;
+  }
+
+  // Validate gamertag length
+  if (gamertag.length() < 3 || gamertag.length() > 15) {
+    QMessageBox::warning(this, "Invalid Gamertag",
+                         "Gamertag must be between 3 and 15 characters.");
+    return;
+  }
+
+  // Create the profile
+  std::string gamertag_string = gamertag.toStdString();
+  bool autologin = (profile_manager->GetAccountCount() == 0);
+
+  if (profile_manager->CreateProfile(gamertag_string, autologin, false)) {
+    RefreshProfiles();
+    QMessageBox::information(
+        this, "Profile Created",
+        QString("Profile '%1' created successfully!").arg(gamertag));
+  } else {
+    QMessageBox::critical(this, "Error",
+                          "Failed to create profile. Please try again.");
+  }
 }
 
 void ProfileDialogQt::OnCloseClicked() { close(); }

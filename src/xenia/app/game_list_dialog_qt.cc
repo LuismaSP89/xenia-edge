@@ -9,6 +9,7 @@
 
 #include "xenia/app/game_list_dialog_qt.h"
 
+#include <QCursor>
 #include <QDesktopServices>
 #include <QHeaderView>
 #include <QImage>
@@ -509,6 +510,16 @@ void GameListDialogQt::OnSettingsClicked() {
 }
 
 void GameListDialogQt::OnProfileClicked() {
+  // If logged in, show context menu instead
+  if (current_profile_xuid_ != 0) {
+    // Show context menu at the cursor position
+    QPoint global_pos = QCursor::pos();
+    QPoint local_pos = profile_button_->mapFromGlobal(global_pos);
+    OnProfileContextMenu(local_pos);
+    return;
+  }
+
+  // Not logged in, open profile dialog
   // If a profile dialog is already open, just bring it to focus
   if (profile_dialog_) {
     profile_dialog_->raise();
@@ -690,6 +701,13 @@ void GameListDialogQt::OnProfileContextMenu(const QPoint& pos) {
     std::thread path_open(LaunchFileExplorer, path);
     path_open.detach();
   });
+
+  context_menu.addSeparator();
+
+  // Profiles Menu
+  QAction* profiles_menu_action = context_menu.addAction("Profiles Menu");
+  connect(profiles_menu_action, &QAction::triggered, this,
+          &GameListDialogQt::OnProfileClicked);
 
   context_menu.exec(profile_button_->mapToGlobal(pos));
 }
