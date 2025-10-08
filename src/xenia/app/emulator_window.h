@@ -17,7 +17,6 @@
 
 #include "xenia/app/patches_dialog.h"
 #include "xenia/app/profile_dialogs.h"
-#include "xenia/app/recent_titles_ui.h"
 #include "xenia/emulator.h"
 #include "xenia/gpu/command_processor.h"
 #include "xenia/ui/imgui_dialog.h"
@@ -265,8 +264,6 @@ class EmulatorWindow {
 
   void ClearDialogs();
 
-  class RecentTitlesUI* recent_titles_ui_ = nullptr;
-
   Emulator* emulator_;
   ui::WindowedAppContext& app_context_;
   bool is_game_process_;
@@ -291,6 +288,7 @@ class EmulatorWindow {
   bool initializing_shader_storage_ = false;
 
   QPointer<class PostProcessingDialogQt> postprocessing_dialog_qt_;
+  QPointer<class GameListDialogQt> game_list_dialog_qt_;
 
   // Storing pointers and toggling dialog state is useful for broadcasting
   // messages back to guest.

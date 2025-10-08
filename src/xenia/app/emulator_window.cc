@@ -16,6 +16,7 @@
 #include "third_party/stb/stb_image_write.h"
 #include "third_party/tomlplusplus/toml.hpp"
 #include "xenia/app/config_dialog.h"
+#include "xenia/app/game_list_dialog_qt.h"
 #include "xenia/app/postprocessing_dialog_qt.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/clock.h"
@@ -345,7 +346,16 @@ void EmulatorWindow::OnEmulatorInitialized() {
 
   // Show recently played games list when the app starts
   if (!recently_launched_titles_.empty() && !is_game_process_) {
-    recent_titles_ui_ = new RecentTitlesUI(imgui_drawer_.get(), this);
+    auto* qt_window = dynamic_cast<ui::QtWindow*>(window_.get());
+    if (qt_window) {
+      // Get the central widget and its layout
+      QWidget* central_widget = qt_window->qwindow()->centralWidget();
+      if (central_widget && central_widget->layout()) {
+        game_list_dialog_qt_ = new GameListDialogQt(central_widget, this);
+        // Add it to the layout so it fills the window
+        central_widget->layout()->addWidget(game_list_dialog_qt_);
+      }
+    }
   }
 
   // Start periodic child process checking if this is UI process
@@ -2176,10 +2186,10 @@ void EmulatorWindow::CheckChildProcessStatus() {
     XELOGI("Recent titles reloaded, count: {}",
            recently_launched_titles_.size());
 
-    // Reload the recent titles UI dialog if it's open
-    if (recent_titles_ui_) {
-      recent_titles_ui_->LoadRecentTitles();
-      XELOGI("Recent titles UI dialog refreshed");
+    // Reload the recent titles dialog if it's open
+    if (game_list_dialog_qt_) {
+      game_list_dialog_qt_->LoadGameList();
+      XELOGI("Game list dialog refreshed");
     }
 
     // Check for launch_data.bin
