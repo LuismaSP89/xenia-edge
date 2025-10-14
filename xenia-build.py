@@ -643,7 +643,7 @@ def run_premake(target_os, action, cc=None):
         os.path.join("tools", "build", "premake.py"),
         "--file=premake5.lua",
         f"--os={target_os}",
-        #"--test-suite-mode=combined",
+        "--test-suite-mode=combined",
         "--verbose",
         action,
     ]
