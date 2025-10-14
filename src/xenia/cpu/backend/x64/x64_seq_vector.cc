@@ -2070,6 +2070,101 @@ struct VECTOR_AVERAGE
 EMITTER_OPCODE_TABLE(OPCODE_VECTOR_AVERAGE, VECTOR_AVERAGE);
 
 // ============================================================================
+// OPCODE_VECTOR_MULTIPLY
+// ============================================================================
+struct VECTOR_MULTIPLY
+    : Sequence<VECTOR_MULTIPLY,
+               I<OPCODE_VECTOR_MULTIPLY, V128Op, V128Op, V128Op>> {
+  static void Emit(X64Emitter& e, const EmitArgType& i) {
+    auto i_flags = i.instr->flags;
+    EmitCommutativeBinaryXmmOp(
+        e, i,
+        [i_flags](X64Emitter& e, const Xmm& dest, const Xmm& src1,
+                  const Xmm& src2) {
+          const TypeName part_type = static_cast<TypeName>(i_flags & 0xFF);
+          const uint32_t arithmetic_flags = i_flags >> 8;
+          bool is_unsigned = !!(arithmetic_flags & ARITHMETIC_UNSIGNED);
+          bool select_odd = !!(arithmetic_flags & ARITHMETIC_SELECT_ODD);
+
+          switch (part_type) {
+            case INT8_TYPE: {
+              // Multiply bytes -> halfwords
+              // PowerPC "even" = bytes 0,2,4,6,8,10,12,14 (even-indexed bytes)
+              // PowerPC "odd" = bytes 1,3,5,7,9,11,13,15 (odd-indexed bytes)
+              // PPC is big-endian: PPC byte 0 = x86 byte 15, PPC byte 15 = x86
+              // byte 0
+              if (select_odd) {
+                // PPC bytes 1,3,5,7,9,11,13,15 = x86 bytes 14,12,10,8,6,4,2,0
+                auto odd_mask = vec128b(14, 12, 10, 8, 6, 4, 2, 0, 0xFF, 0xFF,
+                                        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF);
+                e.vpshufb(e.xmm0, src1, e.StashConstantXmm(0, odd_mask));
+                e.vpshufb(e.xmm1, src2, e.StashConstantXmm(0, odd_mask));
+              } else {
+                // PPC bytes 0,2,4,6,8,10,12,14 = x86 bytes 15,13,11,9,7,5,3,1
+                auto even_mask = vec128b(15, 13, 11, 9, 7, 5, 3, 1, 0xFF, 0xFF,
+                                         0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF);
+                e.vpshufb(e.xmm0, src1, e.StashConstantXmm(0, even_mask));
+                e.vpshufb(e.xmm1, src2, e.StashConstantXmm(0, even_mask));
+              }
+
+              // Sign or zero extend bytes to words
+              if (is_unsigned) {
+                e.vpmovzxbw(e.xmm0, e.xmm0);
+                e.vpmovzxbw(e.xmm1, e.xmm1);
+              } else {
+                e.vpmovsxbw(e.xmm0, e.xmm0);
+                e.vpmovsxbw(e.xmm1, e.xmm1);
+              }
+
+              // Multiply 8 words
+              e.vpmullw(e.xmm0, e.xmm0, e.xmm1);
+
+              // Swap upper and lower 64-bit halves (shuffle dwords: 2,3,0,1)
+              e.vpshufd(dest, e.xmm0, 0b01001110);
+            } break;
+
+            case INT16_TYPE: {
+              // Multiply halfwords -> words
+              // PowerPC "even" = halfwords 0,2,4,6 (even-indexed halfwords)
+              // PowerPC "odd" = halfwords 1,3,5,7 (odd-indexed halfwords)
+              // PPC HW 0 = x86 bytes 14-15, HW 1 = x86 bytes 12-13, etc.
+              if (select_odd) {
+                // PPC HW 1,3,5,7 = x86 bytes (12-13, 8-9, 4-5, 0-1)
+                auto odd_mask = vec128b(12, 13, 8, 9, 4, 5, 0, 1, 0xFF, 0xFF,
+                                        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF);
+                e.vpshufb(e.xmm0, src1, e.StashConstantXmm(0, odd_mask));
+                e.vpshufb(e.xmm1, src2, e.StashConstantXmm(0, odd_mask));
+              } else {
+                // PPC HW 0,2,4,6 = x86 bytes (14-15, 10-11, 6-7, 2-3)
+                auto even_mask = vec128b(14, 15, 10, 11, 6, 7, 2, 3, 0xFF, 0xFF,
+                                         0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF);
+                e.vpshufb(e.xmm0, src1, e.StashConstantXmm(0, even_mask));
+                e.vpshufb(e.xmm1, src2, e.StashConstantXmm(0, even_mask));
+              }
+
+              // Sign or zero extend halfwords to dwords
+              if (is_unsigned) {
+                e.vpmovzxwd(e.xmm0, e.xmm0);
+                e.vpmovzxwd(e.xmm1, e.xmm1);
+              } else {
+                e.vpmovsxwd(e.xmm0, e.xmm0);
+                e.vpmovsxwd(e.xmm1, e.xmm1);
+              }
+
+              // Multiply 4 dwords
+              e.vpmulld(dest, e.xmm0, e.xmm1);
+            } break;
+
+            default:
+              assert_unhandled_case(part_type);
+              break;
+          }
+        });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_VECTOR_MULTIPLY, VECTOR_MULTIPLY);
+
+// ============================================================================
 // OPCODE_INSERT
 // ============================================================================
 struct INSERT_I8

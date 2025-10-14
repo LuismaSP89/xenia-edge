@@ -1085,43 +1085,67 @@ int InstrEmit_vmsum4fp128(PPCHIRBuilder& f, const InstrData& i) {
 }
 
 int InstrEmit_vmulesb(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // (VD) <- (VA.even_bytes) * (VB.even_bytes) (signed)
+  Value* v =
+      f.VectorMultiply(f.LoadVR(i.VX.VA), f.LoadVR(i.VX.VB), INT8_TYPE, 0);
+  f.StoreVR(i.VX.VD, v);
+  return 0;
 }
 
 int InstrEmit_vmulesh(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // (VD) <- (VA.even_halfwords) * (VB.even_halfwords) (signed)
+  Value* v =
+      f.VectorMultiply(f.LoadVR(i.VX.VA), f.LoadVR(i.VX.VB), INT16_TYPE, 0);
+  f.StoreVR(i.VX.VD, v);
+  return 0;
 }
 
 int InstrEmit_vmuleub(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // (VD) <- (VA.even_bytes) * (VB.even_bytes) (unsigned)
+  Value* v = f.VectorMultiply(f.LoadVR(i.VX.VA), f.LoadVR(i.VX.VB), INT8_TYPE,
+                              ARITHMETIC_UNSIGNED);
+  f.StoreVR(i.VX.VD, v);
+  return 0;
 }
 
 int InstrEmit_vmuleuh(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // (VD) <- (VA.even_halfwords) * (VB.even_halfwords) (unsigned)
+  Value* v = f.VectorMultiply(f.LoadVR(i.VX.VA), f.LoadVR(i.VX.VB), INT16_TYPE,
+                              ARITHMETIC_UNSIGNED);
+  f.StoreVR(i.VX.VD, v);
+  return 0;
 }
 
 int InstrEmit_vmulosb(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // (VD) <- (VA.odd_bytes) * (VB.odd_bytes) (signed)
+  Value* v = f.VectorMultiply(f.LoadVR(i.VX.VA), f.LoadVR(i.VX.VB), INT8_TYPE,
+                              ARITHMETIC_SELECT_ODD);
+  f.StoreVR(i.VX.VD, v);
+  return 0;
 }
 
 int InstrEmit_vmulosh(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // (VD) <- (VA.odd_halfwords) * (VB.odd_halfwords) (signed)
+  Value* v = f.VectorMultiply(f.LoadVR(i.VX.VA), f.LoadVR(i.VX.VB), INT16_TYPE,
+                              ARITHMETIC_SELECT_ODD);
+  f.StoreVR(i.VX.VD, v);
+  return 0;
 }
 
 int InstrEmit_vmuloub(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // (VD) <- (VA.odd_bytes) * (VB.odd_bytes) (unsigned)
+  Value* v = f.VectorMultiply(f.LoadVR(i.VX.VA), f.LoadVR(i.VX.VB), INT8_TYPE,
+                              ARITHMETIC_UNSIGNED | ARITHMETIC_SELECT_ODD);
+  f.StoreVR(i.VX.VD, v);
+  return 0;
 }
 
 int InstrEmit_vmulouh(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // (VD) <- (VA.odd_halfwords) * (VB.odd_halfwords) (unsigned)
+  Value* v = f.VectorMultiply(f.LoadVR(i.VX.VA), f.LoadVR(i.VX.VB), INT16_TYPE,
+                              ARITHMETIC_UNSIGNED | ARITHMETIC_SELECT_ODD);
+  f.StoreVR(i.VX.VD, v);
+  return 0;
 }
 
 int InstrEmit_vmulfp128(PPCHIRBuilder& f, const InstrData& i) {

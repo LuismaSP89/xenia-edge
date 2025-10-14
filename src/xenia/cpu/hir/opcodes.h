@@ -49,6 +49,7 @@ enum CacheControlType {
 enum ArithmeticFlags {
   ARITHMETIC_UNSIGNED = (1 << 2),
   ARITHMETIC_SATURATE = (1 << 3),
+  ARITHMETIC_SELECT_ODD = (1 << 4),
 };
 
 constexpr uint32_t MakePermuteMask(uint32_t sel_x, uint32_t x, uint32_t sel_y,
@@ -272,6 +273,7 @@ enum Opcode {
   OPCODE_ROTATE_LEFT,         // remove, left/right shift combo instead
   OPCODE_VECTOR_ROTATE_LEFT,  // eliminate, replace with left/right shift combo
   OPCODE_VECTOR_AVERAGE,
+  OPCODE_VECTOR_MULTIPLY,
   OPCODE_BYTE_SWAP,
   OPCODE_CNTLZ,
   OPCODE_INSERT,
