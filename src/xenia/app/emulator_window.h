@@ -258,6 +258,7 @@ class EmulatorWindow {
 
   static std::string CanonicalizeFileExtension(
       const std::filesystem::path& path);
+  bool IsGamescopeAvailable();
 
   void RunPreviouslyPlayedTitle();
   void FillRecentlyLaunchedTitlesMenu(xe::ui::MenuItem* recent_menu);

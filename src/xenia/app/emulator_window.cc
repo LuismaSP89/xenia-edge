@@ -116,6 +116,11 @@ DECLARE_bool(readback_memexport);
 DEFINE_bool(fullscreen, false, "Whether to launch the emulator in fullscreen.",
             "Display");
 
+DEFINE_bool(use_gamescope, false,
+            "Whether to launch games using gamescope.\n"
+            "Requires gamescope to be available in PATH.",
+            "Display");
+
 DEFINE_bool(controller_hotkeys, false, "Hotkeys for Xbox and PS controllers.",
             "General");
 
@@ -2116,6 +2121,23 @@ std::string EmulatorWindow::CanonicalizeFileExtension(
   return xe::utf8::lower_ascii(xe::path_to_utf8(path.extension()));
 }
 
+bool EmulatorWindow::IsGamescopeAvailable() {
+  // Only check on Linux systems
+#if XE_PLATFORM_LINUX
+  int result = system("which gamescope > /dev/null 2>&1");
+  if (result == 0) {
+    XELOGI("Gamescope is available in PATH");
+    return true;
+  } else {
+    XELOGI("Gamescope not found in PATH");
+    return false;
+  }
+#else
+  // Gamescope is Linux-only
+  return false;
+#endif
+}
+
 void EmulatorWindow::LaunchTitleInNewProcess(
     const std::filesystem::path& path_to_file, bool for_launch_data) {
   // Get the path to the current executable
@@ -2176,6 +2198,15 @@ void EmulatorWindow::LaunchTitleInNewProcess(
   if (pid == 0) {
     // Child process
     std::vector<const char*> argv;
+
+    // Check if gamescope should be used
+    bool use_gamescope = cvars::use_gamescope && IsGamescopeAvailable();
+
+    if (use_gamescope) {
+      XELOGI("Launching with gamescope wrapper");
+      argv.push_back("gamescope");
+    }
+
     argv.push_back(executable_path.c_str());
 
     // Pass the config file if one is being used
@@ -2194,10 +2225,11 @@ void EmulatorWindow::LaunchTitleInNewProcess(
     argv.push_back(nullptr);
 
     // Execute the new process
-    execv(executable_path.c_str(), const_cast<char**>(argv.data()));
+    execvp(argv[0], const_cast<char**>(argv.data()));
 
     // If execv returns, it failed
-    XELOGE("Failed to execute: {}", executable_path.string());
+    XELOGE("Failed to execute: {}",
+           use_gamescope ? "gamescope" : executable_path.string());
     std::exit(1);
   } else if (pid < 0) {
     // Fork failed
