@@ -2851,7 +2851,7 @@ struct SHL_V128 : Sequence<SHL_V128, I<OPCODE_SHL, V128Op, V128Op, I8Op>> {
     } else {
       e.mov(e.GetNativeParam(1), i.src2);
     }
-    e.lea(e.GetNativeParam(0), e.StashXmm(0, src1));
+    e.vmovaps(e.xmm0, src1);
     e.CallNativeSafe(reinterpret_cast<void*>(EmulateShlV128));
     e.vmovaps(i.dest, e.xmm0);
   }
