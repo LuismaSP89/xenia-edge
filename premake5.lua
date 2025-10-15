@@ -15,7 +15,7 @@ objdir(build_obj)
 
 -- Define variables for enabling specific submodules
 -- Todo: Add changing from xb command
-enableTests = false
+enableTests = true
 enableMiscSubprojects = false
 
 -- Define an ARCH variable
