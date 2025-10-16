@@ -38,6 +38,8 @@ struct AVPacket;
 namespace xe {
 namespace apu {
 
+class AudioDriver;
+
 // This is stored in guest space in big-endian order.
 // We load and swap the whole thing to splat here so that we can
 // use bitfields.
@@ -203,6 +205,9 @@ class XmaContext {
   // Convert sample format and swap bytes
   static void ConvertFrame(const uint8_t** samples, bool is_two_channel,
                            uint8_t* output_buffer);
+  // Convert to float samples for direct audio driver submission
+  static void ConvertToFloat(const uint8_t** samples, bool is_two_channel,
+                             uint32_t sample_count, float* output_buffer);
 
   Memory* memory_ = nullptr;
 

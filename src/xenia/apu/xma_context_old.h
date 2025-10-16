@@ -43,6 +43,9 @@ class XmaContextOld : public XmaContext {
   void Disable();
   void Release();
 
+  // Get shared audio driver from decoder (set by parent)
+  void SetDecoder(class XmaDecoder* decoder) { decoder_ = decoder; }
+
  private:
   static void SwapInputBuffer(XMA_CONTEXT_DATA* data);
   static bool TrySetupNextLoop(XMA_CONTEXT_DATA* data,
@@ -93,6 +96,9 @@ class XmaContextOld : public XmaContext {
   // conversion buffer for 2 channel frame
   std::array<uint8_t, kBytesPerFrameChannel * 2> raw_frame_;
   // std::vector<uint8_t> current_frame_ = std::vector<uint8_t>(0);
+
+  // Parent decoder for accessing shared resources
+  class XmaDecoder* decoder_ = nullptr;
 };
 
 }  // namespace apu

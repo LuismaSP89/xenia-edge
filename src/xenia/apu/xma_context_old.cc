@@ -11,9 +11,11 @@
 
 #include <cstring>
 
+#include "xenia/apu/audio_driver.h"
 #include "xenia/apu/xma_decoder.h"
 #include "xenia/apu/xma_helpers.h"
 #include "xenia/base/bit_stream.h"
+#include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
 #include "xenia/base/profiling.h"
@@ -32,6 +34,8 @@ extern "C" {
 
 // Credits for most of this code goes to:
 // https://github.com/koolkdev/libertyv/blob/master/libav_wrapper/xma2dec.c
+
+DECLARE_bool(xma_async_direct_audio);
 
 namespace xe {
 namespace apu {
@@ -662,16 +666,52 @@ void XmaContextOld::Decode(XMA_CONTEXT_DATA* data) {
       assert_true(av_context_->sample_fmt == AV_SAMPLE_FMT_FLTP);
       // assert_true(frame_is_split == (frame_idx == -1));
 
-      //			dump_raw(av_frame_, id());
-      ConvertFrame(reinterpret_cast<const uint8_t**>(&av_frame_->data),
-                   bool(av_frame_->channels > 1), raw_frame_.data());
-      // decoded_consumed_samples_ += kSamplesPerFrame;
-
       auto byte_count = kBytesPerFrameChannel << data->is_stereo;
       assert_true(output_remaining_bytes >= byte_count);
-      output_rb.Write(raw_frame_.data(), byte_count);
-      output_remaining_bytes -= byte_count;
-      data->output_buffer_write_offset = output_rb.write_offset() / 256;
+
+      // Get shared audio driver from parent decoder
+      AudioDriver* audio_driver =
+          decoder_ ? decoder_->GetSharedAudioDriver() : nullptr;
+
+      // Determine if we should use async direct audio submission
+      bool use_async_direct =
+          cvars::xma_async_direct_audio && audio_driver != nullptr &&
+          data->loop_count == 0;  // Disable for looping content
+
+      if (use_async_direct) {
+        // HYBRID APPROACH:
+        // Submit decoded audio directly to audio driver (bypasses guest)
+        float float_samples[AudioDriver::kFrameSamplesMax];
+        ConvertToFloat(reinterpret_cast<const uint8_t**>(&av_frame_->data),
+                       bool(av_frame_->channels > 1), kSamplesPerFrame,
+                       float_samples);
+
+        // Submit directly to audio backend (non-blocking)
+        audio_driver->SubmitFrame(float_samples);
+
+        // Don't write anything to guest buffer or update offsets
+        // The guest won't see decoded data, but audio will play correctly
+        // This prevents timing issues from buffer filling too fast
+
+        // Still decrement remaining bytes so the loop continues correctly
+        output_remaining_bytes -= byte_count;
+
+        XELOGAPU(
+            "XmaContext {}: Async direct audio - submitted {} samples (no "
+            "guest update)",
+            id(), kSamplesPerFrame);
+      } else {
+        // TRADITIONAL PATH:
+        // Convert and write decoded PCM to guest output buffer (blocking)
+        //			dump_raw(av_frame_, id());
+        ConvertFrame(reinterpret_cast<const uint8_t**>(&av_frame_->data),
+                     bool(av_frame_->channels > 1), raw_frame_.data());
+        // decoded_consumed_samples_ += kSamplesPerFrame;
+
+        output_rb.Write(raw_frame_.data(), byte_count);
+        output_remaining_bytes -= byte_count;
+        data->output_buffer_write_offset = output_rb.write_offset() / 256;
+      }
 
       total_samples += id_ == 0 ? kSamplesPerFrame : 0;
 

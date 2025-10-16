@@ -11,6 +11,7 @@
 
 #include <cstring>
 
+#include "xenia/apu/audio_driver.h"
 #include "xenia/apu/xma_decoder.h"
 #include "xenia/base/bit_stream.h"
 #include "xenia/base/logging.h"
@@ -129,6 +130,50 @@ void XmaContext::ConvertFrame(const uint8_t** samples, bool is_two_channel,
     }
   }
 #endif
+}
+
+void XmaContext::ConvertToFloat(const uint8_t** samples, bool is_two_channel,
+                                uint32_t sample_count, float* output_buffer) {
+  // AudioDriver expects 6-channel float data (5.1 surround)
+  // Layout: Front L, Front R, Center, LFE, Back L, Back R
+  // FFmpeg gives us planar float samples (AV_SAMPLE_FMT_FLTP)
+
+  const auto in_channel_0 = reinterpret_cast<const float*>(samples[0]);
+
+  if (is_two_channel && samples[1] != nullptr) {
+    const auto in_channel_1 = reinterpret_cast<const float*>(samples[1]);
+
+    // Stereo: map to front L/R, zero the rest
+    for (uint32_t i = 0; i < sample_count; i++) {
+      output_buffer[i * AudioDriver::kFrameChannelsDefault + 0] =
+          in_channel_0[i];  // Front L
+      output_buffer[i * AudioDriver::kFrameChannelsDefault + 1] =
+          in_channel_1[i];  // Front R
+      output_buffer[i * AudioDriver::kFrameChannelsDefault + 2] =
+          0.0f;  // Center
+      output_buffer[i * AudioDriver::kFrameChannelsDefault + 3] = 0.0f;  // LFE
+      output_buffer[i * AudioDriver::kFrameChannelsDefault + 4] =
+          0.0f;  // Back L
+      output_buffer[i * AudioDriver::kFrameChannelsDefault + 5] =
+          0.0f;  // Back R
+    }
+  } else {
+    // Mono: duplicate to front L/R for better compatibility
+    for (uint32_t i = 0; i < sample_count; i++) {
+      float mono = in_channel_0[i];
+      output_buffer[i * AudioDriver::kFrameChannelsDefault + 0] =
+          mono;  // Front L
+      output_buffer[i * AudioDriver::kFrameChannelsDefault + 1] =
+          mono;  // Front R
+      output_buffer[i * AudioDriver::kFrameChannelsDefault + 2] =
+          0.0f;  // Center
+      output_buffer[i * AudioDriver::kFrameChannelsDefault + 3] = 0.0f;  // LFE
+      output_buffer[i * AudioDriver::kFrameChannelsDefault + 4] =
+          0.0f;  // Back L
+      output_buffer[i * AudioDriver::kFrameChannelsDefault + 5] =
+          0.0f;  // Back R
+    }
+  }
 }
 
 }  // namespace apu

@@ -9,6 +9,8 @@
 
 #include "xenia/apu/xma_decoder.h"
 
+#include "xenia/apu/audio_driver.h"
+#include "xenia/apu/audio_system.h"
 #include "xenia/apu/xma_context.h"
 #include "xenia/apu/xma_context_fake.h"
 #include "xenia/apu/xma_context_new.h"
@@ -22,11 +24,14 @@
 #include "xenia/base/string_buffer.h"
 #include "xenia/cpu/processor.h"
 #include "xenia/cpu/thread_state.h"
+#include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xthread.h"
 extern "C" {
 #include "third_party/FFmpeg/libavutil/log.h"
 }  // extern "C"
+
+DECLARE_bool(xma_async_direct_audio);
 
 // As with normal Microsoft, there are like twelve different ways to access
 // the audio APIs. Early games use XMA*() methods almost exclusively to touch
@@ -61,6 +66,12 @@ DEFINE_string(xma_decoder, "old", "XMA decoder backend to use (old, new, fake)",
 DEFINE_bool(use_dedicated_xma_thread, true,
             "Enables XMA decoding on separate thread. Disabled should produce "
             "better results, but decrease performance a bit.",
+            "APU");
+
+DEFINE_bool(xma_async_direct_audio, false,
+            "Decode XMA asynchronously and submit directly to audio backend. "
+            "Improves performance by avoiding blocking on FFmpeg decode, but "
+            "guest sees silence in output buffer. Audio still plays correctly.",
             "APU");
 
 namespace xe {
@@ -139,18 +150,27 @@ X_STATUS XmaDecoder::Setup(kernel::KernelState* kernel_state) {
       memory()->GetPhysicalAddress(context_data_first_ptr_);
 
   // Setup XMA contexts.
+  // Note: shared_audio_driver_ will be set later by AudioSystem via
+  // SetSharedAudioDriver()
   for (int i = 0; i < kContextCount; ++i) {
+    XmaContext* context = nullptr;
     if (cvars::xma_decoder == "new") {
-      contexts_[i] = new XmaContextNew();
+      context = new XmaContextNew();
     } else if (cvars::xma_decoder == "fake") {
-      contexts_[i] = new XmaContextFake();
+      context = new XmaContextFake();
     } else {
-      contexts_[i] = new XmaContextOld();
+      context = new XmaContextOld();
     }
+    contexts_[i] = context;
 
     uint32_t guest_ptr = context_data_first_ptr_ + i * sizeof(XMA_CONTEXT_DATA);
-    if (contexts_[i]->Setup(i, memory(), guest_ptr)) {
+    if (context->Setup(i, memory(), guest_ptr)) {
       assert_always();
+    }
+
+    // Set parent decoder reference for accessing shared resources
+    if (auto* old_context = dynamic_cast<XmaContextOld*>(context)) {
+      old_context->SetDecoder(this);
     }
   }
   register_file_[XmaRegister::NextContextIndex] = 1;
@@ -222,6 +242,8 @@ void XmaDecoder::Shutdown() {
     xe::threading::Wait(worker_thread_->thread(), false);
     worker_thread_.reset();
   }
+
+  // Note: shared_audio_driver_ is owned by AudioSystem, don't delete it here
 
   if (context_data_first_ptr_) {
     memory()->SystemHeapFree(context_data_first_ptr_);

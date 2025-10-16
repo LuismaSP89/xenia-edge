@@ -24,6 +24,8 @@ namespace xe {
 namespace apu {
 
 struct XMA_CONTEXT_DATA;
+class AudioDriver;
+class AudioSystem;
 
 class XmaDecoder {
  public:
@@ -35,6 +37,14 @@ class XmaDecoder {
 
   X_STATUS Setup(kernel::KernelState* kernel_state);
   void Shutdown();
+
+  // Set shared audio driver for direct XMA audio submission
+  void SetSharedAudioDriver(AudioDriver* driver) {
+    shared_audio_driver_ = driver;
+  }
+
+  // Get shared audio driver (for contexts to use)
+  AudioDriver* GetSharedAudioDriver() const { return shared_audio_driver_; }
 
   uint32_t context_array_ptr() const {
     return register_file_[XmaRegister::ContextArrayAddress];
@@ -83,6 +93,10 @@ class XmaDecoder {
   static const uint32_t kContextCount = 320;
   XmaContext* contexts_[kContextCount];
   BitMap context_bitmap_;
+
+  // Shared audio driver for direct submission (reused across all contexts)
+  AudioDriver* shared_audio_driver_ = nullptr;
+  AudioSystem* audio_system_ = nullptr;
 
   uint32_t context_data_first_ptr_ = 0;
   uint32_t context_data_last_ptr_ = 0;
