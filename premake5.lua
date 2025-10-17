@@ -15,7 +15,7 @@ objdir(build_obj)
 
 -- Define variables for enabling specific submodules
 -- Todo: Add changing from xb command
-enableTests = false
+enableTests = true
 enableMiscSubprojects = false
 
 -- Define an ARCH variable
@@ -126,7 +126,7 @@ filter("configurations:Release")
 
 filter({"configurations:Release", "platforms:not Windows"})
   symbols("On")  -- Enable debug symbols for crash debugging
-  flags("LinkTimeOptimization")  -- Enable LTO for better performance
+  --flags("LinkTimeOptimization")  -- Enable LTO for better performance
   buildoptions({
     "-O3",  -- Maximum optimization (premake's optimize("Speed") might only be -O2)
     "-finline-functions",  -- Aggressive function inlining
