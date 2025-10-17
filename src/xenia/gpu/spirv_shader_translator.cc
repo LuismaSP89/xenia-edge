@@ -23,20 +23,51 @@
 #include "xenia/gpu/spirv_shader.h"
 #include "xenia/ui/vulkan/spirv_tools_context.h"
 
-DEFINE_string(
-    spirv_version_override, "auto",
-    "Override the SPIR-V version used in shader translation.\n"
-    "Use: [auto, 1.0, 1.3, 1.4, 1.5, 1.6]\n"
-    " auto: Auto-detect based on Vulkan device capabilities (default)\n"
-    " 1.0: SPIR-V 1.0 (Vulkan 1.0)\n"
-    " 1.3: SPIR-V 1.3 (Vulkan 1.1)\n"
-    " 1.4: SPIR-V 1.4 (Vulkan 1.1 with KHR_spirv_1_4 extension)\n"
-    " 1.5: SPIR-V 1.5 (Vulkan 1.2+)\n"
-    " 1.6: SPIR-V 1.6 (Vulkan 1.3+)",
-    "GPU");
+DEFINE_string(spirv_version_override, "auto",
+              "Override the SPIR-V version used in shader translation.\n"
+              "Use: [auto, 1.0, 1.3, 1.4, 1.5, 1.6]\n"
+              " auto: Test for SPIR-V 1.5 support, fall back to 1.0 (default)\n"
+              " 1.0: SPIR-V 1.0 (Vulkan 1.0)\n"
+              " 1.3: SPIR-V 1.3 (Vulkan 1.1)\n"
+              " 1.4: SPIR-V 1.4 (Vulkan 1.1 with KHR_spirv_1_4 extension)\n"
+              " 1.5: SPIR-V 1.5 (Vulkan 1.2+)\n"
+              " 1.6: SPIR-V 1.6 (Vulkan 1.3+)",
+              "GPU");
 
 namespace xe {
 namespace gpu {
+
+namespace {
+// Cache for auto-detected SPIR-V version to avoid re-testing on every
+// Features construction. 0 means not yet detected.
+static unsigned int g_cached_spirv_version = 0;
+
+// Tests if SPIR-V 1.5 is supported by creating a minimal shader module.
+bool TestSpirv15Support(const ui::vulkan::VulkanDevice* vulkan_device) {
+  VkShaderModuleCreateInfo create_info = {};
+  create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  create_info.pNext = nullptr;
+  create_info.flags = 0;
+  create_info.codeSize = sizeof(SpirvShaderTranslator::kTestShaderSpv15);
+  create_info.pCode = SpirvShaderTranslator::kTestShaderSpv15;
+
+  VkShaderModule test_module = VK_NULL_HANDLE;
+  VkResult result = vulkan_device->functions().vkCreateShaderModule(
+      vulkan_device->device(), &create_info, nullptr, &test_module);
+
+  if (result == VK_SUCCESS) {
+    vulkan_device->functions().vkDestroyShaderModule(vulkan_device->device(),
+                                                     test_module, nullptr);
+    XELOGI("SPIR-V 1.5 test: PASSED");
+    return true;
+  }
+
+  XELOGW("SPIR-V 1.5 test: FAILED (VkResult = {}), falling back to SPIR-V 1.0",
+         static_cast<int32_t>(result));
+  return false;
+}
+
+}  // namespace
 
 SpirvShaderTranslator::Features::Features(bool all)
     : spirv_version(all ? spv::Spv_1_5 : spv::Spv_1_0),
@@ -94,16 +125,26 @@ SpirvShaderTranslator::Features::Features(
     spirv_version = spv::Spv_1_6;
     XELOGD("SPIR-V version override: 1.6");
   } else {
-    // Auto-detect based on Vulkan device capabilities.
-    const uint32_t vulkan_api_version = vulkan_device->properties().apiVersion;
-    if (vulkan_api_version >= VK_MAKE_API_VERSION(0, 1, 2, 0)) {
-      spirv_version = spv::Spv_1_5;
-    } else if (vulkan_device->extensions().ext_1_2_KHR_spirv_1_4) {
-      spirv_version = spv::Spv_1_4;
-    } else if (vulkan_api_version >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
-      spirv_version = spv::Spv_1_3;
+    // Auto-detect based on actual driver support testing.
+    // Use cached result if already detected.
+    if (g_cached_spirv_version != 0) {
+      spirv_version = g_cached_spirv_version;
     } else {
-      spirv_version = spv::Spv_1_0;
+      // Test SPIR-V 1.5, fall back to 1.0 if it fails.
+      XELOGI(
+          "Auto-detecting SPIR-V version support by testing shader module "
+          "creation...");
+
+      if (TestSpirv15Support(vulkan_device)) {
+        spirv_version = spv::Spv_1_5;
+        XELOGI("Auto-detected and selected SPIR-V version: 1.5");
+      } else {
+        spirv_version = spv::Spv_1_0;
+        XELOGI("Auto-detected and selected SPIR-V version: 1.0 (fallback)");
+      }
+
+      // Cache the detected version
+      g_cached_spirv_version = spirv_version;
     }
   }
 }

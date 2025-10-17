@@ -324,6 +324,19 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // https://github.com/KhronosGroup/SPIRV-Headers/blob/c43a43c7cc3af55910b9bec2a71e3e8a622443cf/include/spirv/spir-v.xml#L79
   static constexpr uint32_t kSpirvMagicToolId = 26;
 
+  // Minimal SPIR-V 1.5 test shader used for version support detection.
+  // Generated with: glslangValidator --target-env spirv1.5 -V -S comp
+  // For source: void main() {}
+  static constexpr uint32_t kTestShaderSpv15[] = {
+      0x07230203, 0x00010500, 0x00080001, 0x00000006, 0x00000000, 0x00020011,
+      0x00000001, 0x0006000b, 0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e,
+      0x00000000, 0x0003000e, 0x00000000, 0x00000001, 0x0005000f, 0x00000005,
+      0x00000004, 0x6e69616d, 0x00000000, 0x00060010, 0x00000004, 0x00000011,
+      0x00000001, 0x00000001, 0x00000001, 0x00030003, 0x00000002, 0x000001c2,
+      0x00040005, 0x00000004, 0x6e69616d, 0x00000000, 0x00020013, 0x00000002,
+      0x00030021, 0x00000003, 0x00000002, 0x00050036, 0x00000002, 0x00000004,
+      0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x000100fd, 0x00010038};
+
   struct Features {
     explicit Features(const ui::vulkan::VulkanDevice* vulkan_device);
     explicit Features(bool all = false);
