@@ -298,7 +298,18 @@ class TestRunner {
     if (sscanf(name, "r%d", &n) == 1) {
       ctx->r[n] = string_util::from_string<uint64_t>(value);
     } else if (sscanf(name, "f%d", &n) == 1) {
-      ctx->f[n] = string_util::from_string<double>(value);
+      if (std::strstr(value, "0x")) {
+        // Special case: Treat float as integer bit pattern.
+        uint64_t int_value = string_util::from_string<uint64_t>(value, true);
+        union {
+          double f;
+          uint64_t u;
+        } f2u;
+        f2u.u = int_value;
+        ctx->f[n] = f2u.f;
+      } else {
+        ctx->f[n] = string_util::from_string<double>(value);
+      }
     } else if (sscanf(name, "v%d", &n) == 1) {
       ctx->v[n] = string_util::from_string<vec128_t>(value);
     } else if (std::strcmp(name, "cr") == 0) {

@@ -2511,12 +2511,12 @@
     <out field="VD" />
     <disasm>vsel [VD], [VA], [VB], [VC]</disasm>
   </insn>
-  <insn mnem="vsel128"      opcode="14000350" form="VX128"    group="v" desc="Vector128 Conditional Select">
+  <insn mnem="vsel128"      opcode="14000350" form="VX128_2"  group="v" desc="Vector128 Conditional Select">
     <in field="VA" />
     <in field="VB" />
-    <in field="VD" />
+    <in field="VC" />
     <out field="VD" />
-    <disasm>vsel128 [VD], [VA], [VB], [VD]</disasm>
+    <disasm>vsel128 [VD], [VA], [VB], [VC]</disasm>
   </insn>
   <insn mnem="vsl"          opcode="100001C4" form="VX"       group="v" desc="Vector Shift Left">
     <in field="VA" />

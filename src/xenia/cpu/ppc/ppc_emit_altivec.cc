@@ -301,19 +301,17 @@ int InstrEmit_stvrxl128(PPCHIRBuilder& f, const InstrData& i) {
 }
 
 int InstrEmit_mfvscr(PPCHIRBuilder& f, const InstrData& i) {
-  // is this the right format?
-
-  f.StoreVR(i.VX128_1.RB,
-            f.LoadContext(offsetof(PPCContext, vscr_vec), VEC128_TYPE));
+  // mfvscr VD - Move from VSCR to VD
+  f.StoreVR(i.VX.VD, f.LoadContext(offsetof(PPCContext, vscr_vec), VEC128_TYPE));
   return 0;
 }
 
 int InstrEmit_mtvscr(PPCHIRBuilder& f, const InstrData& i) {
-  // is this the right format?
+  // mtvscr VB - Move from VB to VSCR
   // todo: what mtvscr does with the unused bits is implementation defined,
   // figure out what it does
 
-  Value* v = f.LoadVR(i.VX128_1.RB);
+  Value* v = f.LoadVR(i.VX.VB);
 
   Value* has_njm_value = f.Extract(v, (uint8_t)3, INT32_TYPE);
 
@@ -1388,7 +1386,10 @@ int InstrEmit_vsel(PPCHIRBuilder& f, const InstrData& i) {
   return InstrEmit_vsel_(f, i.VXA.VD, i.VXA.VA, i.VXA.VB, i.VXA.VC);
 }
 int InstrEmit_vsel128(PPCHIRBuilder& f, const InstrData& i) {
-  return InstrEmit_vsel_(f, VX128_VD128, VX128_VA128, VX128_VB128, VX128_VD128);
+  return InstrEmit_vsel_(f, i.VX128_2.VD128l | (i.VX128_2.VD128h << 5),
+                          i.VX128_2.VA128l | (i.VX128_2.VA128h << 5) | (i.VX128_2.VA128H << 6),
+                          i.VX128_2.VB128l | (i.VX128_2.VB128h << 5),
+                          i.VX128_2.VC);
 }
 // chrispy: this is test code for checking whether a game takes advantage of the
 // VSR/VSL undocumented/undefined variable shift behavior
