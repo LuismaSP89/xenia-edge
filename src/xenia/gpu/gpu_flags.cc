@@ -66,3 +66,9 @@ DEFINE_int32(
     "Set to higher number than query_occlusion_sample_lower_threshold. This "
     "value is ignored if query_occlusion_sample_lower_threshold is set to -1.",
     "GPU");
+
+DEFINE_bool(
+    ac6_ground_fix, false,
+    "This fixes(hide) issues with black ground in AC6. Use only in AC6. "
+    "Might cause issues in other titles.",
+    "HACKS");

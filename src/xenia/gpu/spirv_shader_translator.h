@@ -624,6 +624,10 @@ class SpirvShaderTranslator : public ShaderTranslator {
       const ParsedAluInstruction& instr,
       uint8_t memexport_eM_potentially_written_before, bool& predicate_written);
 
+  // Low-precision reciprocal approximation to match D3D RCP behavior (~11-12
+  // bits of precision).
+  spv::Id ApproximateRcp(spv::Id src);
+
   // Perform endian swap of a uint scalar or vector.
   spv::Id EndianSwap32Uint(spv::Id value, spv::Id endian);
   // Perform endian swap of a uint4 vector.

@@ -868,6 +868,45 @@ spv::Id SpirvShaderTranslator::ProcessVectorAluOperation(
   return spv::NoResult;
 }
 
+spv::Id SpirvShaderTranslator::ApproximateRcp(spv::Id src) {
+  // Implement a reciprocal approximation to match D3D/Xbox 360 RCP behavior.
+  // D3D's RCP instruction is documented to have "approximately 1 ULP error" but
+  // in practice behaves differently from IEEE 754 division.
+  //
+  // The real issue is that hardware RCP uses an algorithm (lookup table +
+  // refinement) that produces slightly different results than full division,
+  // and games may depend on these specific rounding characteristics.
+  //
+  // For now, we simply use division but truncate some mantissa bits to reduce
+  // precision and match the error characteristics better.
+
+  EnsureBuildPointAvailable();
+
+  // Compute full-precision reciprocal
+  spv::Id precise_rcp = builder_->createNoContractionBinOp(
+      spv::OpFDiv, type_float_, const_float_1_, src);
+
+  // Truncate lower mantissa bits to simulate reduced precision.
+  // Float32 has 23 mantissa bits. We truncate the lowest 12 bits to get
+  // ~11-bit precision, matching D3D RCP.
+  //
+  // Method: Convert to bits, mask off lower bits, convert back
+  spv::Id rcp_bits =
+      builder_->createUnaryOp(spv::OpBitcast, type_uint_, precise_rcp);
+
+  // Mask that preserves upper 11 mantissa bits (bits 22-13), clears lower 12
+  // 0xFFFFF000 = keeps sign (1) + exponent (8) + upper 11 mantissa bits
+  spv::Id truncate_mask = builder_->makeUintConstant(0xFFFFF000u);
+  spv::Id truncated_bits = builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
+                                                 rcp_bits, truncate_mask);
+
+  // Convert back to float
+  spv::Id truncated_rcp =
+      builder_->createUnaryOp(spv::OpBitcast, type_float_, truncated_bits);
+
+  return truncated_rcp;
+}
+
 spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
     const ParsedAluInstruction& instr,
     uint8_t memexport_eM_potentially_written_before, bool& predicate_written) {
@@ -1124,10 +1163,8 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
           builder_->makeFloatConstant(-FLT_MAX), result);
     }
     case ucode::AluScalarOpcode::kRcpc: {
-      spv::Id result = builder_->createNoContractionBinOp(
-          spv::OpFDiv, type_float_, const_float_1_,
-          GetOperandComponents(operand_storage[0], instr.scalar_operands[0],
-                               0b0001));
+      spv::Id result = ApproximateRcp(GetOperandComponents(
+          operand_storage[0], instr.scalar_operands[0], 0b0001));
       result = builder_->createTriOp(
           spv::OpSelect, type_float_,
           builder_->createBinOp(spv::OpFOrdEqual, type_bool_, result,
@@ -1140,10 +1177,8 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
           builder_->makeFloatConstant(FLT_MAX), result);
     }
     case ucode::AluScalarOpcode::kRcpf: {
-      spv::Id result = builder_->createNoContractionBinOp(
-          spv::OpFDiv, type_float_, const_float_1_,
-          GetOperandComponents(operand_storage[0], instr.scalar_operands[0],
-                               0b0001));
+      spv::Id result = ApproximateRcp(GetOperandComponents(
+          operand_storage[0], instr.scalar_operands[0], 0b0001));
       result = builder_->createTriOp(
           spv::OpSelect, type_float_,
           builder_->createBinOp(spv::OpFOrdEqual, type_bool_, result,
@@ -1160,10 +1195,8 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
       return builder_->createUnaryOp(spv::OpBitcast, type_float_, result);
     }
     case ucode::AluScalarOpcode::kRcp: {
-      return builder_->createNoContractionBinOp(
-          spv::OpFDiv, type_float_, const_float_1_,
-          GetOperandComponents(operand_storage[0], instr.scalar_operands[0],
-                               0b0001));
+      return ApproximateRcp(GetOperandComponents(
+          operand_storage[0], instr.scalar_operands[0], 0b0001));
     }
     case ucode::AluScalarOpcode::kRsqc: {
       spv::Id result = builder_->createUnaryBuiltinCall(

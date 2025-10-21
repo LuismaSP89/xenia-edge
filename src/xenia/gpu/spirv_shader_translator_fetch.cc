@@ -16,6 +16,7 @@
 #include "third_party/glslang/SPIRV/GLSL.std.450.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/math.h"
+#include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/spirv_compatibility.h"
 
 namespace xe {
@@ -80,6 +81,14 @@ void SpirvShaderTranslator::ProcessVertexFetchInstruction(
       if (instr.attributes.is_index_rounded) {
         index = builder_->createNoContractionBinOp(
             spv::OpFAdd, type_float_, index, builder_->makeFloatConstant(0.5f));
+      } else {
+        // UGLY HACK. Remove ASAP.
+        // Proper fix requires accurate RCP implementation.
+        if (cvars::ac6_ground_fix) {
+          index = builder_->createNoContractionBinOp(
+              spv::OpFAdd, type_float_, index,
+              builder_->makeFloatConstant(0.00025f));
+        }
       }
       index = builder_->createUnaryOp(
           spv::OpConvertFToS, type_int_,
