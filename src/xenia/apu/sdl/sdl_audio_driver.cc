@@ -168,20 +168,30 @@ void SDLAudioDriver::SDLCallback(void* userdata, Uint8* stream, int len) {
     if (cvars::mute) {
       std::memset(stream, 0, len);
     } else if (driver->need_format_conversion_) {
+      // For format conversion, we need to convert first, then apply volume
+      std::vector<float> temp_buffer(driver->channel_samples_ *
+                                     driver->sdl_device_channels_);
       switch (driver->sdl_device_channels_) {
         case 2:
           conversion::sequential_6_BE_to_interleaved_2_LE(
-              reinterpret_cast<float*>(stream), buffer,
-              driver->channel_samples_);
+              temp_buffer.data(), buffer, driver->channel_samples_);
           break;
         case 6:
           conversion::sequential_6_BE_to_interleaved_6_LE(
-              reinterpret_cast<float*>(stream), buffer,
-              driver->channel_samples_);
+              temp_buffer.data(), buffer, driver->channel_samples_);
           break;
         default:
           assert_unhandled_case(driver->sdl_device_channels_);
           break;
+      }
+      // Apply volume after conversion
+      if (driver->volume_ != 1.0f) {
+        std::memset(stream, 0, len);
+        SDL_MixAudioFormat(
+            stream, reinterpret_cast<Uint8*>(temp_buffer.data()), AUDIO_F32,
+            len, static_cast<int>(driver->volume_ * SDL_MIX_MAXVOLUME));
+      } else {
+        std::memcpy(stream, temp_buffer.data(), len);
       }
     } else {
       assert_true(driver->sdl_device_channels_ == driver->frame_channels_);
