@@ -816,8 +816,8 @@ struct VECTOR_SUB
                 } else {
                   e.vpsubd(e.xmm1, src1, src2);
 
-                  if (e.IsFeatureEnabled(kX64EmitAVX512Ortho |
-                                         kX64EmitAVX512DQ)) {
+                  if (false && e.IsFeatureEnabled(kX64EmitAVX512Ortho |
+                                                  kX64EmitAVX512DQ)) {
                     e.vmovdqa32(e.xmm3, src1);
                     e.vpternlogd(e.xmm3, e.xmm1, src2, 0b00011000);
 
@@ -2374,7 +2374,8 @@ struct PERMUTE_V128
           e.vxorps(e.xmm0, i.src1, e.GetXmmConstPtr(XMMSwapWordMask));
         }
 
-        if (e.IsFeatureEnabled(kX64EmitAVX512Ortho | kX64EmitAVX512VBMI)) {
+        if (false &&
+            e.IsFeatureEnabled(kX64EmitAVX512Ortho | kX64EmitAVX512VBMI)) {
           Xmm table_lo = e.xmm1;
           if (i.src2.is_constant) {
             e.LoadConstantXmm(table_lo, i.src2.constant());
