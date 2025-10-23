@@ -816,8 +816,8 @@ struct VECTOR_SUB
                 } else {
                   e.vpsubd(e.xmm1, src1, src2);
 
-                  if (e.IsFeatureEnabled(kX64EmitAVX512Ortho |
-                                         kX64EmitAVX512DQ)) {
+                  if (false && e.IsFeatureEnabled(kX64EmitAVX512Ortho |
+                                                  kX64EmitAVX512DQ)) {
                     e.vmovdqa32(e.xmm3, src1);
                     e.vpternlogd(e.xmm3, e.xmm1, src2, 0b00011000);
 
