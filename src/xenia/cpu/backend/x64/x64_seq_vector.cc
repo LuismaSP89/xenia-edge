@@ -792,7 +792,7 @@ struct VECTOR_SUB
                   // src1/src2.
                   e.vpsubd(e.xmm1, src1, src2);
 
-                  if (e.IsFeatureEnabled(kX64EmitAVX512Ortho)) {
+                  if (false && e.IsFeatureEnabled(kX64EmitAVX512Ortho)) {
                     // If the result is less or equal to the first operand then
                     // we did not underflow
                     Opmask not_underflow = e.k1;
