@@ -1087,9 +1087,7 @@ bool VulkanRenderTargetCache::Resolve(const Memory& memory,
           draw_util::resolve_copy_shader_info[size_t(copy_shader)];
 
       // Make sure there is memory to write to.
-      bool copy_dest_committed;
-      // TODO(Triang3l): Resolution-scaled buffer committing.
-      copy_dest_committed =
+      bool copy_dest_committed =
           shared_memory.RequestRange(resolve_info.copy_dest_extent_start,
                                      resolve_info.copy_dest_extent_length);
       if (!copy_dest_committed) {

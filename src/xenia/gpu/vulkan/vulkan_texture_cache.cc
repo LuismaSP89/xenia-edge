@@ -1298,56 +1298,43 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
       return false;
     }
     if (texture_key.scaled_resolve) {
-      // For scaled textures, read from scaled resolve buffers
       uint32_t guest_address = texture_key.base_page << 12;
       uint32_t guest_size = vulkan_texture.GetGuestBaseSize();
 
-      // Ensure the scaled buffer exists
-      if (EnsureScaledResolveMemoryCommitted(guest_address, guest_size)) {
-        // Make the range current
-        if (MakeScaledResolveRangeCurrent(guest_address, guest_size)) {
-          VkBuffer scaled_buffer = GetCurrentScaledResolveBuffer();
-          if (scaled_buffer != VK_NULL_HANDLE) {
-            // Calculate offset within the scaled buffer
-            uint32_t draw_resolution_scale_area =
-                draw_resolution_scale_x() * draw_resolution_scale_y();
-            uint64_t scaled_offset =
-                uint64_t(guest_address) * draw_resolution_scale_area;
+      if (MakeScaledResolveRangeCurrent(guest_address, guest_size,
+                                        load_shader_info.source_bpe_log2)) {
+        VkBuffer scaled_buffer = GetCurrentScaledResolveBuffer();
+        if (scaled_buffer != VK_NULL_HANDLE) {
+          uint32_t draw_resolution_scale_area =
+              draw_resolution_scale_x() * draw_resolution_scale_y();
+          uint64_t scaled_offset =
+              uint64_t(guest_address) * draw_resolution_scale_area;
 
-            uint64_t buffer_relative_offset = 0;
-            if (scaled_resolve_current_buffer_index_ <
-                scaled_resolve_buffers_.size()) {
-              const ScaledResolveBuffer& current_buffer =
-                  scaled_resolve_buffers_[scaled_resolve_current_buffer_index_];
-              buffer_relative_offset =
-                  scaled_offset - current_buffer.range_start_scaled;
-            }
-
-            write_descriptor_set_source_base_buffer_info.buffer = scaled_buffer;
-            write_descriptor_set_source_base_buffer_info.offset =
-                buffer_relative_offset;
-            write_descriptor_set_source_base_buffer_info.range =
-                xe::align(guest_size * draw_resolution_scale_area,
-                          source_length_alignment);
-
-          } else {
-            XELOGE(
-                "Scaled resolve texture load: Failed to get current scaled "
-                "buffer for texture at 0x{:08X}",
-                guest_address);
-            return false;
+          uint64_t buffer_relative_offset = 0;
+          if (scaled_resolve_current_buffer_index_ <
+              scaled_resolve_buffers_.size()) {
+            const ScaledResolveBuffer& current_buffer =
+                scaled_resolve_buffers_[scaled_resolve_current_buffer_index_];
+            buffer_relative_offset =
+                scaled_offset - current_buffer.range_start_scaled;
           }
+
+          write_descriptor_set_source_base_buffer_info.buffer = scaled_buffer;
+          write_descriptor_set_source_base_buffer_info.offset =
+              buffer_relative_offset;
+          write_descriptor_set_source_base_buffer_info.range = xe::align(
+              guest_size * draw_resolution_scale_area, source_length_alignment);
         } else {
           XELOGE(
-              "Scaled resolve texture load: Failed to make range current for "
-              "texture at 0x{:08X}",
+              "Scaled resolve texture load: Failed to get current scaled "
+              "buffer for base at 0x{:08X}",
               guest_address);
           return false;
         }
       } else {
         XELOGE(
-            "Scaled resolve texture load: Failed to ensure scaled memory for "
-            "texture at 0x{:08X}",
+            "Scaled resolve texture load: Failed to make range current for "
+            "base at 0x{:08X}",
             guest_address);
         return false;
       }
@@ -1384,16 +1371,55 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
     if (!descriptor_set_source_mips) {
       return false;
     }
-    // TODO: Implement scaled mips support similar to D3D12.
-    // Currently mips are always loaded from unscaled shared memory even when
-    // the base texture is scaled. D3D12 properly handles scaled mips in
-    // D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl.
-    write_descriptor_set_source_mips_buffer_info.buffer =
-        vulkan_shared_memory.buffer();
-    write_descriptor_set_source_mips_buffer_info.offset = texture_key.mip_page
-                                                          << 12;
-    write_descriptor_set_source_mips_buffer_info.range =
-        xe::align(vulkan_texture.GetGuestMipsSize(), source_length_alignment);
+    if (texture_key.scaled_resolve) {
+      uint32_t guest_address = texture_key.mip_page << 12;
+      uint32_t guest_size = vulkan_texture.GetGuestMipsSize();
+
+      if (MakeScaledResolveRangeCurrent(guest_address, guest_size,
+                                        load_shader_info.source_bpe_log2)) {
+        VkBuffer scaled_buffer = GetCurrentScaledResolveBuffer();
+        if (scaled_buffer != VK_NULL_HANDLE) {
+          uint32_t draw_resolution_scale_area =
+              draw_resolution_scale_x() * draw_resolution_scale_y();
+          uint64_t scaled_offset =
+              uint64_t(guest_address) * draw_resolution_scale_area;
+
+          uint64_t buffer_relative_offset = 0;
+          if (scaled_resolve_current_buffer_index_ <
+              scaled_resolve_buffers_.size()) {
+            const ScaledResolveBuffer& current_buffer =
+                scaled_resolve_buffers_[scaled_resolve_current_buffer_index_];
+            buffer_relative_offset =
+                scaled_offset - current_buffer.range_start_scaled;
+          }
+
+          write_descriptor_set_source_mips_buffer_info.buffer = scaled_buffer;
+          write_descriptor_set_source_mips_buffer_info.offset =
+              buffer_relative_offset;
+          write_descriptor_set_source_mips_buffer_info.range = xe::align(
+              guest_size * draw_resolution_scale_area, source_length_alignment);
+        } else {
+          XELOGE(
+              "Scaled resolve texture load: Failed to get current scaled "
+              "buffer for mips at 0x{:08X}",
+              guest_address);
+          return false;
+        }
+      } else {
+        XELOGE(
+            "Scaled resolve texture load: Failed to make range current for "
+            "mips at 0x{:08X}",
+            guest_address);
+        return false;
+      }
+    } else {
+      write_descriptor_set_source_mips_buffer_info.buffer =
+          vulkan_shared_memory.buffer();
+      write_descriptor_set_source_mips_buffer_info.offset = texture_key.mip_page
+                                                            << 12;
+      write_descriptor_set_source_mips_buffer_info.range =
+          xe::align(vulkan_texture.GetGuestMipsSize(), source_length_alignment);
+    }
     VkWriteDescriptorSet& write_descriptor_set_source_mips =
         write_descriptor_sets[write_descriptor_set_count++];
     write_descriptor_set_source_mips.sType =
