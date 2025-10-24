@@ -2381,10 +2381,12 @@ struct PERMUTE_V128
           } else {
             table_lo = i.src2;
           }
-          Opmask zeroes = e.k1;
-          // _mm_cmple_epu8_mask
-          e.vpcmpub(zeroes, e.xmm0, e.GetXmmConstPtr(XMMPermuteControl15), 2);
-          e.vpermb(i.dest.reg() | zeroes | e.T_z, e.xmm0, table_lo);
+          // Mask control to 0-31 range
+          e.vpand(e.xmm0, e.GetXmmConstPtr(XMMPermuteByteMask));
+          Opmask mask = e.k1;
+          // Zero when index > 15 (would be from src3, which is zero)
+          e.vpcmpub(mask, e.xmm0, e.GetXmmConstPtr(XMMPermuteControl15), 2);
+          e.vpermb(i.dest.reg() | mask | e.T_z, e.xmm0, table_lo);
           return;
         }
 
