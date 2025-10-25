@@ -2379,12 +2379,11 @@ struct PERMUTE_V128
           if (i.src2.is_constant) {
             e.LoadConstantXmm(table_lo, i.src2.constant());
           } else {
-            table_lo = i.src2;
+            // copy to avoid conflicts with xmm0
+            e.vmovdqa(table_lo, i.src2);
           }
-          // Mask control to 0-31 range
-          e.vpand(e.xmm0, e.GetXmmConstPtr(XMMPermuteByteMask));
           Opmask mask = e.k1;
-          // Zero when index > 15 (would be from src3, which is zero)
+          e.vpand(e.xmm0, e.xmm0, e.GetXmmConstPtr(XMMPermuteByteMask));
           e.vpcmpub(mask, e.xmm0, e.GetXmmConstPtr(XMMPermuteControl15), 2);
           e.vpermb(i.dest.reg() | mask | e.T_z, e.xmm0, table_lo);
           return;
