@@ -153,3 +153,19 @@ project("xenia-app")
         'if exist "' .. windeployqt .. '" "' .. windeployqt .. '" --release --no-translations --no-system-d3d-compiler --no-opengl-sw "$(TargetPath)"'
       }
     end
+
+  -- Copy optimized-settings JSON files next to executable
+  filter("platforms:Windows")
+    -- Use absolute path to avoid issues with relative paths
+    local optimized_settings_src = path.translate(path.getabsolute(path.join(project_root, "third_party", "optimized-settings", "settings")), "\\")
+    postbuildcommands {
+      'echo Copying optimized_settings from "' .. optimized_settings_src .. '" to "$(TargetDir)optimized_settings\\"',
+      'if exist "' .. optimized_settings_src .. '" (xcopy /I /Y /Q "' .. optimized_settings_src .. '\\*.json" "$(TargetDir)optimized_settings\\") else (echo Warning: optimized-settings not found at ' .. optimized_settings_src .. ')'
+    }
+
+  filter("platforms:Linux")
+    local optimized_settings_src = path.getabsolute(path.join(project_root, "third_party", "optimized-settings", "settings"))
+    postbuildcommands {
+      'echo "Copying optimized_settings from ' .. optimized_settings_src .. ' to $(TargetDir)optimized_settings/"',
+      '[ -d "' .. optimized_settings_src .. '" ] && mkdir -p "$(TargetDir)optimized_settings" && cp "' .. optimized_settings_src .. '"/*.json "$(TargetDir)optimized_settings/" || echo "Warning: optimized-settings not found at ' .. optimized_settings_src .. '"'
+    }
