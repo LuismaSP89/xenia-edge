@@ -165,7 +165,8 @@ project("xenia-app")
 
   filter("platforms:Linux")
     local optimized_settings_src = path.getabsolute(path.join(project_root, "third_party", "optimized-settings", "settings"))
+    local optimized_settings_dst = path.getabsolute(path.join(project_root, "build", "bin", "Linux")) .. "/%{cfg.buildcfg}/optimized_settings"
     postbuildcommands {
-      'echo "Copying optimized_settings from ' .. optimized_settings_src .. ' to $(TargetDir)optimized_settings/"',
-      '[ -d "' .. optimized_settings_src .. '" ] && mkdir -p "$(TargetDir)optimized_settings" && cp "' .. optimized_settings_src .. '"/*.json "$(TargetDir)optimized_settings/" || echo "Warning: optimized-settings not found at ' .. optimized_settings_src .. '"'
+      '{MKDIR} ' .. optimized_settings_dst,
+      '{COPY} ' .. optimized_settings_src .. '/*.json ' .. optimized_settings_dst
     }
