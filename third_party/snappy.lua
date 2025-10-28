@@ -21,3 +21,5 @@ project("snappy")
       "cmake -DSNAPPY_BUILD_TESTS=OFF -DSNAPPY_BUILD_BENCHMARKS=OFF -DSNAPPY_REQUIRE_AVX=ON "..snappy_dir.." -B"..snappy_dir
     })
   end
+  filter("platforms:Windows-*")
+    warnings("Off")  -- Too many warnings.

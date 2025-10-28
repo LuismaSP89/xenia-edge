@@ -33,6 +33,7 @@ project("xenia-app")
     "libavcodec",
     "libavutil",
     "mspack",
+    "SDL2",
     "snappy",
     "xxhash",
   })
@@ -81,7 +82,7 @@ project("xenia-app")
       "xenia_main.cc",
     })
 
-  filter("platforms:Windows")
+  filter("platforms:Windows-*")
     files({
       "main_resources.rc",
     })
@@ -109,7 +110,7 @@ project("xenia-app")
       "SDL2",
     })
 
-  filter("platforms:Windows")
+  filter("platforms:Windows-*")
     links({
       "xenia-apu-xaudio2",
       "xenia-gpu-d3d12",
@@ -118,17 +119,17 @@ project("xenia-app")
       "xenia-ui-d3d12",
     })
 
-  filter("platforms:Windows")
+  filter("platforms:Windows-*")
 
   if enableMiscSubprojects then
-    filter({"platforms:Windows", SINGLE_LIBRARY_FILTER})
+    filter({"platforms:Windows-*", SINGLE_LIBRARY_FILTER})
       links({
         "xenia-gpu-d3d12-trace-viewer",
         "xenia-ui-window-d3d12-demo",
       })
   end
 
-  filter("platforms:Windows")
+  filter("platforms:Windows-*")
     -- Only create the .user file if it doesn't already exist.
     local user_file = project_root.."/build/xenia-app.vcxproj.user"
     if not os.isfile(user_file) then
@@ -136,7 +137,7 @@ project("xenia-app")
     end
 
   -- Run windeployqt as post-build event to copy Qt DLLs
-  filter({"platforms:Windows", "configurations:Debug or Checked"})
+  filter({"platforms:Windows-*", "configurations:Debug or Checked"})
     local qt_dir = os.getenv("QT_DIR")
     if qt_dir then
       local windeployqt = path.translate(path.join(qt_dir, "bin", "windeployqt.exe"), "\\")
@@ -145,7 +146,7 @@ project("xenia-app")
       }
     end
 
-  filter({"platforms:Windows", "configurations:Release"})
+  filter({"platforms:Windows-*", "configurations:Release"})
     local qt_dir = os.getenv("QT_DIR")
     if qt_dir then
       local windeployqt = path.translate(path.join(qt_dir, "bin", "windeployqt.exe"), "\\")
@@ -155,7 +156,7 @@ project("xenia-app")
     end
 
   -- Copy optimized-settings JSON files next to executable
-  filter("platforms:Windows")
+  filter("platforms:Windows-*")
     -- Use absolute path to avoid issues with relative paths
     local optimized_settings_src = path.translate(path.getabsolute(path.join(project_root, "third_party", "optimized-settings", "settings")), "\\")
     postbuildcommands {

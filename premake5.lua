@@ -82,7 +82,7 @@ filter({"configurations:Checked", "platforms:Linux"})
     "-fsanitize=undefined",
   })
 
-filter({"configurations:Checked", "platforms:Windows"}) -- "toolset:msc"
+filter({"configurations:Checked", "platforms:Windows-*"}) -- "toolset:msc"
   buildoptions({
     "/RTCsu",           -- Full Run-Time Checks.
   })
@@ -94,7 +94,7 @@ filter({"configurations:Checked or Debug", "platforms:Linux"})
     -- "_GLIBCXX_DEBUG",   -- libstdc++ debug mode (disabled - causes ABI issues with system libraries)
   })
 
-filter({"configurations:Checked or Debug", "platforms:Windows"}) -- "toolset:msc"
+filter({"configurations:Checked or Debug", "platforms:Windows-*"}) -- "toolset:msc"
   symbols("Full")
 
 filter("configurations:Debug")
@@ -134,7 +134,7 @@ filter({"configurations:Release", "platforms:not Windows"})
     "-fomit-frame-pointer",  -- Don't keep frame pointer for better performance
   })
 
-filter({"configurations:Release", "platforms:Windows"}) -- "toolset:msc"
+filter({"configurations:Release", "platforms:Windows-*"}) -- "toolset:msc"
   symbols("Off")  -- Disable PDB generation for release builds
   linktimeoptimization("On")
   buildoptions({
@@ -286,7 +286,7 @@ if os.istarget("android") then
     })
 end
 
-filter("platforms:Windows")
+filter("platforms:Windows-*")
   system("windows")
   toolset("msc")
   buildoptions({
@@ -306,8 +306,11 @@ filter("platforms:Windows")
     "_CRT_SECURE_NO_WARNINGS",
     "WIN32",
     "_WIN64=1",
-    "_AMD64=1",
   })
+  filter("platforms:Windows-*", "architecture:x86_64")
+    defines({
+      "_AMD64=1",
+    })
   linkoptions({
     "/ignore:4006",  -- Ignores complaints about empty obj files.
     "/ignore:4221",
@@ -337,7 +340,7 @@ filter("platforms:Windows")
     })
   end
 
-filter({"platforms:Windows", "configurations:Release"})
+filter({"platforms:Windows-*", "configurations:Release"})
   if qt_dir then
     links({
       "Qt6Core",
@@ -346,7 +349,7 @@ filter({"platforms:Windows", "configurations:Release"})
     })
   end
 
-filter({"platforms:Windows", "configurations:Debug or Checked"})
+filter({"platforms:Windows-*", "configurations:Debug or Checked"})
   if qt_dir then
     links({
       "Qt6Cored",
@@ -355,10 +358,10 @@ filter({"platforms:Windows", "configurations:Debug or Checked"})
     })
   end
 
-filter("platforms:Windows")
+filter("platforms:Windows-*")
 
 -- Embed the manifest for things like dependencies and DPI awareness.
-filter({"platforms:Windows", "kind:ConsoleApp or WindowedApp"})
+filter({"platforms:Windows-*", "kind:ConsoleApp or WindowedApp"})
   files({
     "src/xenia/base/app_win32.manifest"
   })
@@ -388,7 +391,12 @@ workspace("xenia")
         ["ARCHS"] = "x86_64"
       })
     elseif os.istarget("windows") then
-      platforms({"Windows"})
+      platforms({"Windows-ARM64", "Windows-x86_64"})
+      filter("platforms:Windows-ARM64")
+        architecture("ARM64")
+      filter("platforms:Windows-x86_64")
+        architecture("x86_64")
+      filter({})
       -- 10.0.15063.0: ID3D12GraphicsCommandList1::SetSamplePositions.
       -- 10.0.19041.0: D3D12_HEAP_FLAG_CREATE_NOT_ZEROED.
       -- 10.0.22000.0: DWMWA_WINDOW_CORNER_PREFERENCE.
@@ -460,7 +468,7 @@ workspace("xenia")
     end
 
     -- Suppress warnings for third_party modules on Windows
-    filter({"platforms:Windows"})
+    filter({"platforms:Windows-*"})
       if string.startswith(prj.name, "third_party") or
          prj.name == "aes_128" or
          prj.name == "capstone" or
@@ -495,7 +503,11 @@ workspace("xenia")
   include("src/xenia/apu/nop")
   include("src/xenia/base")
   include("src/xenia/cpu")
-  include("src/xenia/cpu/backend/x64")
+
+  filter("architecture:x86_64")
+    include("src/xenia/cpu/backend/x64")
+  filter({})
+
   include("src/xenia/debug/ui")
   include("src/xenia/gpu")
   include("src/xenia/gpu/null")

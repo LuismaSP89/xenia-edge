@@ -16,7 +16,7 @@ project("xenia-ui-vulkan")
   })
 
   -- Include SPIRV-Tools from Vulkan SDK
-  filter("platforms:Windows")
+  filter("platforms:Windows-*")
     includedirs({
       "$(VULKAN_SDK)/Include",
     })
