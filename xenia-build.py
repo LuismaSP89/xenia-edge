@@ -1008,6 +1008,9 @@ class BaseBuildCommand(Command):
             "--target", action="append", default=[],
             help="Builds only the given target(s).")
         self.parser.add_argument(
+            "--arch", choices=["x64", "arm64"], default="x64",
+            type=str.lower, help="Target architecture (Windows only). Defaults to x64.")
+        self.parser.add_argument(
             "--force", action="store_true",
             help="Forces a full rebuild.")
         self.parser.add_argument(
@@ -1044,6 +1047,9 @@ class BaseBuildCommand(Command):
                     # Convert config name to match project configuration names
                     # e.g., "debug" -> "Debug Windows"
                     config_name = f"{args['config'].capitalize()} Windows"
+                    # Determine platform - project files use simple names: x64 or ARM64
+                    arch = args.get("arch", "x64").lower()
+                    platform_name = "ARM64" if arch == "arm64" else "x64"
                     for target in args["target"]:
                         project_file = f"build/{target}.vcxproj"
                         if not os.path.exists(project_file):
@@ -1060,12 +1066,15 @@ class BaseBuildCommand(Command):
                             "/v:m",
                             target_arg,
                             f"/p:Configuration={config_name}",
-                            "/p:Platform=x64",
+                            f"/p:Platform={platform_name}",
                             ] + pass_args)
                         if result != 0:
                             break
                 else:
                     # Build entire solution
+                    # Solution uses platform names like "Windows-x86_64" and config without "Windows" suffix
+                    arch = args.get("arch", "x64").lower()
+                    platform_name = "Windows-ARM64" if arch == "arm64" else "Windows-x86_64"
                     targets = "/t:Rebuild" if args["force"] else None
                     result = subprocess.call([
                         "msbuild",
@@ -1074,6 +1083,7 @@ class BaseBuildCommand(Command):
                         "/m",
                         "/v:m",
                         f"/p:Configuration={args['config']}",
+                        f"/p:Platform={platform_name}",
                         ] + ([targets] if targets else []) + pass_args)
         elif sys.platform == "darwin":
             schemes = args["target"] or ["xenia-app"]
