@@ -50,9 +50,15 @@ DEFINE_bool(clear_memory_page_state, false,
 
 DEFINE_bool(
     readback_resolve, false,
-    "Read render-to-texture results on the CPU. This may be "
-    "needed in some games, for instance, for screenshots in saved games, but "
-    "causes mid-frame synchronization, so it has a huge performance impact.",
+    "Enable GPU-CPU synchronization stall for readback resolve. When true, "
+    "waits for GPU to finish (accurate but slow). When false, reads from "
+    "previous frame (fast, 1 frame delay). Most games work fine with false.",
+    "GPU");
+
+DEFINE_bool(
+    readback_resolve_disable, false,
+    "Completely disable readback resolve. When true, render-to-texture results "
+    "are not read back to CPU at all. Some games render better without it.",
     "GPU");
 
 DEFINE_bool(
@@ -76,6 +82,9 @@ void SaveGPUSetting(GPUSetting setting, uint64_t value) {
     case GPUSetting::ReadbackResolve:
       OVERRIDE_bool(readback_resolve, static_cast<bool>(value));
       break;
+    case GPUSetting::ReadbackResolveDisable:
+      OVERRIDE_bool(readback_resolve_disable, static_cast<bool>(value));
+      break;
     case GPUSetting::ReadbackMemexport:
       OVERRIDE_bool(readback_memexport, static_cast<bool>(value));
       break;
@@ -88,6 +97,8 @@ bool GetGPUSetting(GPUSetting setting) {
       return cvars::clear_memory_page_state;
     case GPUSetting::ReadbackResolve:
       return cvars::readback_resolve;
+    case GPUSetting::ReadbackResolveDisable:
+      return cvars::readback_resolve_disable;
     case GPUSetting::ReadbackMemexport:
       return cvars::readback_memexport;
   }

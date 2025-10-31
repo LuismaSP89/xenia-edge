@@ -36,6 +36,7 @@ namespace gpu {
 enum class GPUSetting {
   ClearMemoryPageState,
   ReadbackResolve,
+  ReadbackResolveDisable,
   ReadbackMemexport
 };
 
