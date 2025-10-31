@@ -1626,6 +1626,9 @@ void D3D12CommandProcessor::ShutdownContext() {
   }
   readback_buffers_.clear();
 
+  ui::d3d12::util::ReleaseAndNull(memexport_readback_buffer_);
+  memexport_readback_buffer_size_ = 0;
+
   ui::d3d12::util::ReleaseAndNull(scratch_buffer_);
   scratch_buffer_size_ = 0;
 
@@ -3093,19 +3096,17 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
                                     written_address, written_length)) {
     if (!texture_cache_->IsDrawResolutionScaled() && written_length) {
       // Create a key for this specific resolve operation
-      uint64_t resolve_key =
-          (uint64_t(written_address) << 32) | uint64_t(written_length);
+      uint64_t resolve_key = MakeReadbackResolveKey(written_address, written_length);
       ReadbackBuffer& rb = readback_buffers_[resolve_key];
       rb.last_used_frame = frame_current_;
 
       uint32_t write_index = rb.current_index;
-      uint32_t size = written_length;
+      uint32_t size = AlignReadbackBufferSize(written_length);
 
       // Allocate/resize write buffer if needed
       if (size > rb.sizes[write_index]) {
         const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
         ID3D12Device* device = provider.GetDevice();
-        size = xe::align(size, kScratchBufferSizeIncrement);
         D3D12_RESOURCE_DESC buffer_desc;
         ui::d3d12::util::FillBufferResourceDesc(buffer_desc, size,
                                                 D3D12_RESOURCE_FLAG_NONE);
@@ -3373,17 +3374,11 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
 
     // Evict old readback buffers only when map gets too large to prevent
     // unbounded memory growth. Don't do this every frame as it's expensive.
-    constexpr size_t kMaxReadbackBuffers = 64;
     if (readback_buffers_.size() > kMaxReadbackBuffers) {
       for (auto it = readback_buffers_.begin(); it != readback_buffers_.end();) {
-        // Skip the memexport buffer (key 0) - it's managed separately
-        if (it->first == 0) {
-          ++it;
-          continue;
-        }
-
-        // Evict if not used recently (more than 60 frames ago)
-        if (frame_current_ > 60 && it->second.last_used_frame < frame_current_ - 60) {
+        // Evict if not used recently
+        if (frame_current_ > kReadbackBufferEvictionAgeFrames &&
+            it->second.last_used_frame < frame_current_ - kReadbackBufferEvictionAgeFrames) {
           // Release both buffers
           if (it->second.buffers[0] != nullptr) {
             it->second.buffers[0]->Release();
@@ -5177,12 +5172,10 @@ ID3D12Resource* D3D12CommandProcessor::RequestReadbackBuffer(uint32_t size) {
   if (size == 0) {
     return nullptr;
   }
-  // Simple single buffer for memexport (always syncs, no delayed reads)
-  // Use key 0 as a special memexport buffer
-  ReadbackBuffer& rb = readback_buffers_[0];
 
-  size = xe::align(size, kScratchBufferSizeIncrement);
-  if (size > rb.sizes[0]) {
+  size = AlignReadbackBufferSize(size);
+
+  if (size > memexport_readback_buffer_size_) {
     const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
     ID3D12Device* device = provider.GetDevice();
     D3D12_RESOURCE_DESC buffer_desc;
@@ -5196,13 +5189,13 @@ ID3D12Resource* D3D12CommandProcessor::RequestReadbackBuffer(uint32_t size) {
       XELOGE("Failed to create a {} MB readback buffer", size >> 20);
       return nullptr;
     }
-    if (rb.buffers[0] != nullptr) {
-      rb.buffers[0]->Release();
+    if (memexport_readback_buffer_ != nullptr) {
+      memexport_readback_buffer_->Release();
     }
-    rb.buffers[0] = buffer;
-    rb.sizes[0] = size;
+    memexport_readback_buffer_ = buffer;
+    memexport_readback_buffer_size_ = size;
   }
-  return rb.buffers[0];
+  return memexport_readback_buffer_;
 }
 
 void D3D12CommandProcessor::WriteGammaRampSRV(

@@ -756,6 +756,11 @@ class VulkanCommandProcessor final : public CommandProcessor {
   };
   // Map: (written_address << 32 | written_length) -> ReadbackBuffer
   std::unordered_map<uint64_t, ReadbackBuffer> readback_buffers_;
+
+  // Simple single buffer for memexport (always syncs, no double-buffering)
+  VkBuffer memexport_readback_buffer_ = VK_NULL_HANDLE;
+  VkDeviceMemory memexport_readback_buffer_memory_ = VK_NULL_HANDLE;
+  uint32_t memexport_readback_buffer_size_ = 0;
 };
 
 }  // namespace vulkan

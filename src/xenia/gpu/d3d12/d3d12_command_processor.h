@@ -702,6 +702,10 @@ class D3D12CommandProcessor final : public CommandProcessor {
   // Map: (written_address << 32 | written_length) -> ReadbackBuffer
   std::unordered_map<uint64_t, ReadbackBuffer> readback_buffers_;
 
+  // Simple single buffer for memexport (always syncs, no double-buffering)
+  ID3D12Resource* memexport_readback_buffer_ = nullptr;
+  uint32_t memexport_readback_buffer_size_ = 0;
+
   // The current fixed-function drawing state.
   D3D12_VIEWPORT ff_viewport_;
   D3D12_RECT ff_scissor_;
