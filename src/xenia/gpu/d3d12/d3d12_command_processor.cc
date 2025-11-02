@@ -2773,6 +2773,9 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
         uint32_t vfetch_index = i * 32 + j;
         xenos::xe_gpu_vertex_fetch_t vfetch_constant =
             regs.GetVertexFetch(vfetch_index);
+        XELOGI("D3D12_VFETCH_CHECK: index={} type={} dwords=[{:08X} {:08X}]",
+               vfetch_index, static_cast<uint32_t>(vfetch_constant.type),
+               vfetch_constant.dword_0, vfetch_constant.dword_1);
         switch (vfetch_constant.type) {
           case xenos::FetchConstantType::kVertex:
             break;

@@ -421,7 +421,12 @@ void Shader::GatherVertexFetchInformation(
     assert_not_zero(fetch_instr.attributes.stride);
     VertexBinding vertex_binding;
     vertex_binding.binding_index = int(vertex_bindings_.size());
-    vertex_binding.fetch_constant = op.fetch_constant_index();
+    uint32_t calculated_index = op.fetch_constant_index();
+    vertex_binding.fetch_constant = calculated_index;
+    XELOGI(
+        "VFETCH_BINDING_CREATE: calculated_index={} (type={} at runtime check)",
+        calculated_index,
+        "will be checked");
     vertex_binding.stride_words = fetch_instr.attributes.stride;
     vertex_binding.attributes.push_back({});
     vertex_bindings_.emplace_back(std::move(vertex_binding));

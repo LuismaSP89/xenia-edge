@@ -2539,16 +2539,31 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // Ensure vertex buffers are resident.
   // TODO(Triang3l): Cache residency for ranges in a way similar to how texture
   // validity is tracked.
+  //
+  // Use the vertex_fetch_bitmap instead of vertex_bindings() to avoid using
+  // cached/stale vertex binding indices. The bitmap is populated during shader
+  // translation and represents which fetch constant indices the shader actually
+  // references, allowing us to check the current register values at draw time.
+  const Shader::ConstantRegisterMap& constant_map_vertex =
+      vertex_shader->constant_register_map();
   uint64_t vertex_buffers_resident[2] = {};
-  for (const Shader::VertexBinding& vertex_binding :
-       vertex_shader->vertex_bindings()) {
-    uint32_t vfetch_index = vertex_binding.fetch_constant;
+  for (uint32_t i = 0;
+       i < xe::countof(constant_map_vertex.vertex_fetch_bitmap); ++i) {
+    uint32_t vfetch_bits_remaining =
+        constant_map_vertex.vertex_fetch_bitmap[i];
+    uint32_t j;
+    while (xe::bit_scan_forward(vfetch_bits_remaining, &j)) {
+      vfetch_bits_remaining = xe::clear_lowest_bit(vfetch_bits_remaining);
+      uint32_t vfetch_index = i * 32 + j;
     if (vertex_buffers_resident[vfetch_index >> 6] &
         (uint64_t(1) << (vfetch_index & 63))) {
       continue;
     }
     xenos::xe_gpu_vertex_fetch_t vfetch_constant =
         regs.GetVertexFetch(vfetch_index);
+    XELOGI("VULKAN_VFETCH_CHECK: index={} type={} dwords=[{:08X} {:08X}]",
+           vfetch_index, static_cast<uint32_t>(vfetch_constant.type),
+           vfetch_constant.dword_0, vfetch_constant.dword_1);
     switch (vfetch_constant.type) {
       case xenos::FetchConstantType::kVertex:
         break;
@@ -2564,9 +2579,24 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
             vfetch_index, vfetch_constant.dword_0, vfetch_constant.dword_1);
         return false;
       default:
+        // Type is kTexture (2) or kInvalidTexture (3) - completely wrong for vertex data
+        if (cvars::gpu_allow_invalid_fetch_constants) {
+          XELOGW(
+              "Vertex fetch constant {} ({:08X} {:08X}) has wrong type {} "
+              "(texture fetch constant in vertex slot) - allowing due to "
+              "--gpu_allow_invalid_fetch_constants=true. This will likely crash "
+              "or produce garbage!",
+              vfetch_index, vfetch_constant.dword_0, vfetch_constant.dword_1,
+              static_cast<uint32_t>(vfetch_constant.type));
+          break;
+        }
         XELOGW(
-            "Vertex fetch constant {} ({:08X} {:08X}) is completely invalid!",
-            vfetch_index, vfetch_constant.dword_0, vfetch_constant.dword_1);
+            "Vertex fetch constant {} ({:08X} {:08X}) is completely invalid! "
+            "Type={} - this slot contains a texture fetch constant (type 2), not a "
+            "vertex fetch constant (type 0). This may indicate the shader is reading "
+            "from the wrong fetch constant index, or the game has a bug.",
+            vfetch_index, vfetch_constant.dword_0, vfetch_constant.dword_1,
+            static_cast<uint32_t>(vfetch_constant.type));
         return false;
     }
     if (!shared_memory_->RequestRange(vfetch_constant.address << 2,
@@ -2577,8 +2607,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
           vfetch_constant.address << 2, vfetch_constant.size << 2);
       return false;
     }
-    vertex_buffers_resident[vfetch_index >> 6] |= uint64_t(1)
-                                                  << (vfetch_index & 63);
+      vertex_buffers_resident[vfetch_index >> 6] |= uint64_t(1)
+                                                    << (vfetch_index & 63);
+    }
   }
 
   // Synchronize the memory pages backing memory scatter export streams, and
