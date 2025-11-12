@@ -15,11 +15,19 @@ project("xenia-apu")
   includedirs({
     project_root.."/third_party/FFmpeg",
   })
+  defines({
+    "QT_MULTIMEDIA_LIB",
+  })
   filter("platforms:Linux")
     links({
       "xenia-helper-sdl",
       "SDL2",
+      "Qt6::Multimedia",
     })
     sdl2_include()
+  filter("platforms:Windows")
+    links({
+      "Qt6Multimedia",
+    })
   filter({})
   local_platform_files()

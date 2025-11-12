@@ -337,7 +337,7 @@ X_STATUS Emulator::Setup(
       XELOGE("{}: Failed to setup audio_system!", __func__);
       return result;
     }
-    audio_media_player_ = std::make_unique<apu::AudioMediaPlayer>(
+    audio_media_player_ = std::make_unique<apu::AudioMediaPlayerQt>(
         audio_system_.get(), kernel_state_.get());
     audio_media_player_->Setup();
   }
