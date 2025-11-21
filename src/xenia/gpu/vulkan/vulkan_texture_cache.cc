@@ -602,15 +602,145 @@ VkImageView VulkanTextureCache::GetActiveBindingOrNullImageView(
     bool is_signed) const {
   VkImageView image_view = VK_NULL_HANDLE;
   const TextureBinding* binding = GetValidTextureBinding(fetch_constant_index);
-  if (binding && AreDimensionsCompatible(dimension, binding->key.dimension)) {
+
+  // Logging to diagnose black texture issue
+  bool using_null_fallback = false;
+  const char* fallback_reason = nullptr;
+
+  if (!binding) {
+    using_null_fallback = true;
+    fallback_reason = "no valid texture binding found";
+  } else if (!AreDimensionsCompatible(dimension, binding->key.dimension)) {
+    using_null_fallback = true;
+    fallback_reason = "dimension mismatch";
+  } else {
     const VulkanTextureBinding& vulkan_binding =
         vulkan_texture_bindings_[fetch_constant_index];
     image_view = is_signed ? vulkan_binding.image_view_signed
                            : vulkan_binding.image_view_unsigned;
+    if (image_view == VK_NULL_HANDLE) {
+      using_null_fallback = true;
+      fallback_reason = "image view is null";
+    }
   }
+
   if (image_view != VK_NULL_HANDLE) {
+    // Successful texture binding - log occasionally for verification
+    static uint64_t success_count = 0;
+    success_count++;
+    if ((success_count % 1000) == 0) {
+      const char* data_source = "unknown";
+      if (binding && binding->texture) {
+        data_source = binding->texture->IsResolved() ? "resolved" : "memory";
+      } else if (binding && binding->texture_signed) {
+        data_source = binding->texture_signed->IsResolved() ? "resolved" : "memory";
+      }
+
+      uint32_t width = 0, height = 0;
+      uint32_t format = 0;
+      if (binding && binding->key.is_valid) {
+        width = binding->key.GetWidth();
+        height = binding->key.GetHeight();
+        format = static_cast<uint32_t>(binding->key.format);
+      }
+
+      XELOGI(
+          "Vulkan: Successfully bound texture (count: {}) - fetch_constant={}, "
+          "dimension={}, signed={}, source={}, size={}x{}, format={}",
+          success_count, fetch_constant_index,
+          dimension == xenos::FetchOpDimension::k3DOrStacked   ? "3D/Stacked"
+          : dimension == xenos::FetchOpDimension::kCube        ? "Cube"
+          : dimension == xenos::FetchOpDimension::k2D          ? "2D"
+          : dimension == xenos::FetchOpDimension::k1D          ? "1D"
+                                                               : "Unknown",
+          is_signed, data_source, width, height, format);
+    }
     return image_view;
   }
+
+  // Log when falling back to null/black placeholder texture
+  static uint64_t null_fallback_count = 0;
+  null_fallback_count++;
+
+  // Reduce spam: only log first occurrence and every 100th repeat per unique case
+  struct FailureKey {
+    uint32_t fetch_constant;
+    xenos::FetchOpDimension dimension;
+    bool is_signed;
+    const char* reason;
+
+    bool operator==(const FailureKey& other) const {
+      return fetch_constant == other.fetch_constant &&
+             dimension == other.dimension &&
+             is_signed == other.is_signed &&
+             reason == other.reason;
+    }
+  };
+  struct FailureKeyHasher {
+    size_t operator()(const FailureKey& key) const {
+      return std::hash<uint32_t>()(key.fetch_constant) ^
+             (std::hash<int>()(static_cast<int>(key.dimension)) << 1) ^
+             (std::hash<bool>()(key.is_signed) << 2);
+    }
+  };
+  static std::unordered_map<FailureKey, uint64_t, FailureKeyHasher> failure_counts;
+
+  FailureKey key{fetch_constant_index, dimension, is_signed, fallback_reason};
+  uint64_t& count = failure_counts[key];
+  count++;
+
+  bool should_log = (count == 1) || (count % 100 == 0);
+
+  if (should_log) {
+    const char* dimension_name = "unknown";
+    switch (dimension) {
+      case xenos::FetchOpDimension::k1D:
+        dimension_name = "1D";
+        break;
+      case xenos::FetchOpDimension::k2D:
+        dimension_name = "2D";
+        break;
+      case xenos::FetchOpDimension::k3DOrStacked:
+        dimension_name = "3D/Stacked";
+        break;
+      case xenos::FetchOpDimension::kCube:
+        dimension_name = "Cube";
+        break;
+    }
+
+    XELOGW(
+        "Vulkan: Using NULL placeholder texture (#{} total, {} for this case) - "
+        "fetch_constant={}, dimension={}, signed={}, reason: {}",
+        null_fallback_count, count, fetch_constant_index, dimension_name,
+        is_signed, fallback_reason);
+
+    if (binding) {
+      const char* actual_dimension_name = "unknown";
+      switch (binding->key.dimension) {
+        case xenos::DataDimension::k1D:
+          actual_dimension_name = "1D";
+          break;
+        case xenos::DataDimension::k2DOrStacked:
+          actual_dimension_name = "2D/Stacked";
+          break;
+        case xenos::DataDimension::k3D:
+          actual_dimension_name = "3D";
+          break;
+        case xenos::DataDimension::kCube:
+          actual_dimension_name = "Cube";
+          break;
+      }
+      XELOGW(
+          "  Texture exists: actual_dimension={}, format={}, {}x{}, "
+          "swizzled_signs=0x{:02X} (needs_unsigned={}, needs_signed={})",
+          actual_dimension_name, static_cast<uint32_t>(binding->key.format),
+          binding->key.width_minus_1 + 1, binding->key.height_minus_1 + 1,
+          binding->swizzled_signs,
+          texture_util::IsAnySignNotSigned(binding->swizzled_signs),
+          texture_util::IsAnySignSigned(binding->swizzled_signs));
+    }
+  }
+
   switch (dimension) {
     case xenos::FetchOpDimension::k3DOrStacked:
       return null_image_view_3d_;
@@ -1640,6 +1770,17 @@ void VulkanTextureCache::UpdateTextureBindingsImpl(
             static_cast<VulkanTexture*>(binding->texture_signed)
                 ->GetView(true, binding->host_swizzle);
       }
+      // IMPORTANT: Shader translator ALWAYS creates both signed and unsigned
+      // bindings, even when not needed. If we don't create a view, it samples
+      // NULL and appears black. Fix: alias missing views to the one that exists.
+      if (vulkan_binding.image_view_unsigned == VK_NULL_HANDLE &&
+          vulkan_binding.image_view_signed != VK_NULL_HANDLE) {
+        vulkan_binding.image_view_unsigned = vulkan_binding.image_view_signed;
+      }
+      if (vulkan_binding.image_view_signed == VK_NULL_HANDLE &&
+          vulkan_binding.image_view_unsigned != VK_NULL_HANDLE) {
+        vulkan_binding.image_view_signed = vulkan_binding.image_view_unsigned;
+      }
     } else {
       VulkanTexture* texture = static_cast<VulkanTexture*>(binding->texture);
       if (texture) {
@@ -1650,6 +1791,16 @@ void VulkanTextureCache::UpdateTextureBindingsImpl(
         if (texture_util::IsAnySignSigned(binding->swizzled_signs)) {
           vulkan_binding.image_view_signed =
               texture->GetView(true, binding->host_swizzle);
+        }
+        // IMPORTANT: Shader translator ALWAYS creates both signed and unsigned
+        // bindings. Alias missing views to prevent black textures.
+        if (vulkan_binding.image_view_unsigned == VK_NULL_HANDLE &&
+            vulkan_binding.image_view_signed != VK_NULL_HANDLE) {
+          vulkan_binding.image_view_unsigned = vulkan_binding.image_view_signed;
+        }
+        if (vulkan_binding.image_view_signed == VK_NULL_HANDLE &&
+            vulkan_binding.image_view_unsigned != VK_NULL_HANDLE) {
+          vulkan_binding.image_view_signed = vulkan_binding.image_view_unsigned;
         }
       }
     }
