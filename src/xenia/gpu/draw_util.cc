@@ -15,6 +15,7 @@
 #include "xenia/base/memory.h"
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/texture_cache.h"
+#include "xenia/gpu/texture_info.h"
 #include "xenia/ui/graphics_util.h"
 
 // Very prominent in 545407F2.
@@ -1104,6 +1105,18 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
     dest_format = DepthRenderTargetToTextureFormat(rb_depth_info.depth_format);
   } else {
     dest_format = xenos::TextureFormat(rb_copy_dest_info.copy_dest_format);
+    // Handle case where copy_dest_format is 0 (invalid/uninitialized).
+    // Use source RT format as fallback to prevent resolve from failing.
+    if (dest_format == xenos::TextureFormat::k_1_REVERSE) {
+      auto color_info = regs.Get<reg::RB_COLOR_INFO>(
+          reg::RB_COLOR_INFO::rt_register_indices[rb_copy_control
+                                                      .copy_src_select]);
+      dest_format = ColorRenderTargetToTextureFormat(color_info.color_format);
+      XELOGW(
+          "Resolve has invalid copy_dest_format=0, using source RT format {} "
+          "instead",
+          FormatInfo::GetName(dest_format));
+    }
     // For development feedback - not much known about these formats currently.
     xenos::TextureFormat dest_closest_format;
     switch (dest_format) {
@@ -1193,8 +1206,13 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
                                   rb_copy_dest_pitch.copy_dest_pitch, bpp_log2);
     }
   } else {
-    XELOGE("Tried to resolve to format {}, which is not a ColorFormat",
-           FormatInfo::GetName(dest_format));
+    XELOGE(
+        "Tried to resolve to format {} (value={}), which is not a ColorFormat. "
+        "RB_COPY_DEST_INFO=0x{:08X}, is_depth={}, dest_base=0x{:08X}, "
+        "window=({},{})-({},{})",
+        FormatInfo::GetName(dest_format), static_cast<uint32_t>(dest_format),
+        *reinterpret_cast<const uint32_t*>(&rb_copy_dest_info), is_depth,
+        rb_copy_dest_base, x0, y0, x1, y1);
     copy_dest_extent_start = copy_dest_base_adjusted;
     copy_dest_extent_end = copy_dest_base_adjusted;
   }
