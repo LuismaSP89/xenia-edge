@@ -1897,22 +1897,27 @@ bool PhysicalHeap::TriggerCallbacks(
   uint32_t block_index_last = system_page_last >> 6;
 
   // Check if watching any page, whether need to call the callback at all.
+  // When unprotect=false (access violation), only trigger if pages are watched.
+  // When unprotect=true (explicit trigger like file reads), always trigger
+  // callbacks even for unwatched memory to invalidate GPU caches.
   bool any_watched = false;
-  for (uint32_t i = block_index_first; i <= block_index_last; ++i) {
-    uint64_t block = system_page_flags_[i].notify_on_invalidation;
-    if (i == block_index_first) {
-      block &= ~((uint64_t(1) << (system_page_first & 63)) - 1);
+  if (!unprotect) {
+    for (uint32_t i = block_index_first; i <= block_index_last; ++i) {
+      uint64_t block = system_page_flags_[i].notify_on_invalidation;
+      if (i == block_index_first) {
+        block &= ~((uint64_t(1) << (system_page_first & 63)) - 1);
+      }
+      if (i == block_index_last && (system_page_last & 63) != 63) {
+        block &= (uint64_t(1) << ((system_page_last & 63) + 1)) - 1;
+      }
+      if (block) {
+        any_watched = true;
+        break;
+      }
     }
-    if (i == block_index_last && (system_page_last & 63) != 63) {
-      block &= (uint64_t(1) << ((system_page_last & 63) + 1)) - 1;
+    if (!any_watched) {
+      return false;
     }
-    if (block) {
-      any_watched = true;
-      break;
-    }
-  }
-  if (!any_watched) {
-    return false;
   }
 
   // Trigger callbacks.
