@@ -46,8 +46,16 @@ class SpirvShaderTranslator : public ShaderTranslator {
       // Early fragment tests - enable if alpha test and alpha to coverage are
       // disabled; ignored if anything in the shader blocks early Z writing.
       kEarlyHint,
-      // TODO(Triang3l): Unorm24 (rounding) and float24 (truncating and
-      // rounding) output modes.
+      // Converting the depth to the closest 32-bit float representable exactly
+      // as a 20e4 float, to support invariance in cases when the guest
+      // reuploads a previously resolved depth buffer to the EDRAM, rounding
+      // towards zero (truncating). Uses DepthLessEqual execution mode to allow
+      // conservative early Z culling.
+      kFloat24Truncating,
+      // Similar to kFloat24Truncating, but rounding to the nearest even.
+      // Always uses regular depth output rather than DepthLessEqual because
+      // rounding up results in a bigger value.
+      kFloat24Rounding,
     };
 
     struct {
@@ -522,6 +530,20 @@ class SpirvShaderTranslator : public ShaderTranslator {
                Modification::DepthStencilMode::kEarlyHint &&
            !edram_fragment_shader_interlock_ &&
            current_shader().implicit_early_z_write_allowed();
+  }
+
+  // Whether depth should be converted to 20e4 float24 in the pixel shader for
+  // host render targets (FBO path).
+  bool FSR_IsWritingFloat24Depth() const {
+    if (edram_fragment_shader_interlock_) {
+      return false;
+    }
+    Modification::DepthStencilMode depth_stencil_mode =
+        GetSpirvShaderModification().pixel.depth_stencil_mode;
+    return depth_stencil_mode ==
+               Modification::DepthStencilMode::kFloat24Truncating ||
+           depth_stencil_mode ==
+               Modification::DepthStencilMode::kFloat24Rounding;
   }
 
   uint32_t GetModificationInterpolatorMask() const {

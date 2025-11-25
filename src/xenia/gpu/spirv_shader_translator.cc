@@ -820,6 +820,23 @@ std::vector<uint8_t> SpirvShaderTranslator::CompleteTranslation() {
       builder_->addExecutionMode(function_main_,
                                  spv::ExecutionModeEarlyFragmentTests);
     }
+    if (current_shader().writes_depth() || FSR_IsWritingFloat24Depth()) {
+      // DepthReplacing is required when writing to gl_FragDepth.
+      builder_->addExecutionMode(function_main_,
+                                 spv::ExecutionModeDepthReplacing);
+      // When doing float24 conversion on interpolated depth (shader doesn't
+      // write depth), add a depth hint to preserve early-Z when possible.
+      // Truncating mode: output is always <= input, use DepthLess.
+      // Rounding mode: output can be > input, no hint possible (early-Z disabled).
+      if (FSR_IsWritingFloat24Depth() && !current_shader().writes_depth()) {
+        if (GetSpirvShaderModification().pixel.depth_stencil_mode ==
+            Modification::DepthStencilMode::kFloat24Truncating) {
+          builder_->addExecutionMode(function_main_,
+                                     spv::ExecutionMode::DepthLess);
+        }
+        // Rounding mode: no hint, early-Z will be disabled.
+      }
+    }
     if (edram_fragment_shader_interlock_) {
       // Accessing per-sample values, so interlocking just when there's common
       // coverage is enough if the device exposes that.
@@ -2111,11 +2128,14 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
   // param_gen: Needed for PsParamGen calculation.
   // FBO alpha-to-coverage: Needed for dithering pattern, but only when
   // alpha-to-coverage can actually run (no early fragment tests).
+  // Float24 depth conversion (non-depth-writing): Need gl_FragCoord.z for
+  // interpolated depth.
   bool need_frag_coord =
       edram_fragment_shader_interlock_ || param_gen_needed ||
       (!edram_fragment_shader_interlock_ && !is_depth_only_fragment_shader_ &&
        current_shader().writes_color_target(0) &&
-       !IsExecutionModeEarlyFragmentTests());
+       !IsExecutionModeEarlyFragmentTests()) ||
+      (FSR_IsWritingFloat24Depth() && !current_shader().writes_depth());
   if (need_frag_coord) {
     input_fragment_coordinates_ = builder_->createVariable(
         spv::NoPrecision, spv::StorageClassInput, type_float4_, "gl_FragCoord");
@@ -2187,8 +2207,9 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
   }
 
   // Depth output.
+  // Created for explicit depth writes OR float24 depth conversion.
   output_or_var_fragment_depth_ = spv::NoResult;
-  if (current_shader().writes_depth()) {
+  if (current_shader().writes_depth() || FSR_IsWritingFloat24Depth()) {
     if (!edram_fragment_shader_interlock_) {
       // Create gl_FragDepth output.
       output_or_var_fragment_depth_ =

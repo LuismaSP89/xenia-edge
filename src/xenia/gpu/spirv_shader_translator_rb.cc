@@ -1312,6 +1312,41 @@ void SpirvShaderTranslator::CompleteFragmentShaderInMain() {
                               out_color);
       }
     }
+
+    // FBO path: Convert depth to 20e4 float24 if needed.
+    if (FSR_IsWritingFloat24Depth()) {
+      assert_true(output_or_var_fragment_depth_ != spv::NoResult);
+      bool round_to_nearest_even =
+          GetSpirvShaderModification().pixel.depth_stencil_mode ==
+          Modification::DepthStencilMode::kFloat24Rounding;
+      spv::Id depth_in;
+      bool remap_from_0_to_0_5;
+      if (current_shader().writes_depth()) {
+        // Shader writes depth - input is in guest 0..1 range.
+        depth_in = builder_->createLoad(output_or_var_fragment_depth_,
+                                        spv::NoPrecision);
+        remap_from_0_to_0_5 = false;
+      } else {
+        // Shader doesn't write depth - read interpolated depth from
+        // gl_FragCoord.z which is in host 0..0.5 range.
+        assert_true(input_fragment_coordinates_ != spv::NoResult);
+        id_vector_temp_.clear();
+        id_vector_temp_.push_back(builder_->makeIntConstant(2));
+        depth_in = builder_->createLoad(
+            builder_->createAccessChain(spv::StorageClassInput,
+                                        input_fragment_coordinates_,
+                                        id_vector_temp_),
+            spv::NoPrecision);
+        remap_from_0_to_0_5 = true;
+      }
+      // Convert to 20e4 and back to get float24-quantized depth.
+      spv::Id depth_20e4 = PreClampedDepthTo20e4(
+          *builder_, depth_in, round_to_nearest_even, remap_from_0_to_0_5,
+          ext_inst_glsl_std_450_);
+      spv::Id depth_out = Depth20e4To32(*builder_, depth_20e4, 0, true, false,
+                                        ext_inst_glsl_std_450_);
+      builder_->createStore(depth_out, output_or_var_fragment_depth_);
+    }
   }
 
   if (edram_fragment_shader_interlock_) {
