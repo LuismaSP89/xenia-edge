@@ -949,8 +949,10 @@ bool D3D12TextureCache::EnsureScaledResolveMemoryCommitted(
     D3D12_HEAP_DESC heap_desc = {};
     heap_desc.SizeInBytes = kScaledResolveHeapSize;
     heap_desc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
-    heap_desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS |
-                      provider.GetHeapFlagCreateNotZeroed();
+    // Don't use CREATE_NOT_ZEROED for scaled resolve heaps - we need them
+    // zero-initialized to avoid garbage when reading from regions that
+    // haven't been written to by a resolve yet.
+    heap_desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
     Microsoft::WRL::ComPtr<ID3D12Heap> scaled_resolve_heap;
     if (FAILED(device->CreateHeap(&heap_desc,
                                   IID_PPV_ARGS(&scaled_resolve_heap)))) {
