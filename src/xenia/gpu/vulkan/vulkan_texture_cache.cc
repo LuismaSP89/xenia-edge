@@ -2833,7 +2833,8 @@ bool VulkanTextureCache::EnsureScaledResolveMemoryCommitted(
         VkBufferCreateInfo buffer_create_info = {};
         buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         buffer_create_info.size = new_buffer.size;
-        buffer_create_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        buffer_create_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
         VmaAllocationCreateInfo allocation_create_info = {};
@@ -2849,6 +2850,28 @@ bool VulkanTextureCache::EnsureScaledResolveMemoryCommitted(
               static_cast<int>(result));
           return false;
         }
+
+        // Zero-initialize the buffer to avoid garbage when reading from
+        // regions that haven't been written to by a resolve yet.
+        command_processor_.SubmitBarriers(true);
+        DeferredCommandBuffer& command_buffer =
+            command_processor_.deferred_command_buffer();
+        command_buffer.CmdVkFillBuffer(new_buffer.buffer, 0, VK_WHOLE_SIZE, 0);
+        // Barrier to ensure the fill completes before any subsequent writes.
+        VkBufferMemoryBarrier fill_barrier = {};
+        fill_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        fill_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        fill_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
+                                     VK_ACCESS_SHADER_WRITE_BIT;
+        fill_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        fill_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        fill_barrier.buffer = new_buffer.buffer;
+        fill_barrier.offset = 0;
+        fill_barrier.size = VK_WHOLE_SIZE;
+        command_buffer.CmdVkPipelineBarrier(
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 1,
+            &fill_barrier, 0, nullptr);
 
         new_buffer.range_start_scaled = buffer_start;
         new_buffer.range_length_scaled = buffer_size;

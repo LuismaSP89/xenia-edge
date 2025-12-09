@@ -205,6 +205,12 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
                              args.vertex_offset, args.first_instance);
       } break;
 
+      case Command::kVkFillBuffer: {
+        auto& args = *reinterpret_cast<const ArgsVkFillBuffer*>(stream);
+        dfn.vkCmdFillBuffer(command_buffer, args.dst_buffer, args.dst_offset,
+                            args.size, args.data);
+      } break;
+
       case Command::kVkEndRenderPass:
         dfn.vkCmdEndRenderPass(command_buffer);
         break;
