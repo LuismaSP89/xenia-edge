@@ -212,6 +212,10 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // swizzles for 2 texture fetch constants (in bits 0:11 and 12:23).
     uint32_t texture_swizzles[16];
 
+    // Whether the contents of each texture in fetch constants comes from a
+    // resolve operation (bit per texture, 32 textures max).
+    uint32_t textures_resolved;
+
     float alpha_test_reference;
     uint32_t edram_32bpp_tile_pitch_dwords_scaled;
     uint32_t edram_depth_base_dwords_scaled;
@@ -881,6 +885,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
     kSystemConstantPointScreenDiameterToNdcRadius,
     kSystemConstantTextureSwizzledSigns,
     kSystemConstantTextureSwizzles,
+    kSystemConstantTexturesResolved,
     kSystemConstantAlphaTestReference,
     kSystemConstantAlphaToMask,
     kSystemConstantEdram32bppTilePitchDwordsScaled,
