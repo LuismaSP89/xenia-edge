@@ -35,6 +35,55 @@ entry_inputs_end_code_begin_compute_xe
       (XeTextureHostLinearOffset(int3_xe(block_index), load_info.host_pitch,
                                  load_info.size_blocks.y, 4u) +
        load_info.host_offset) >> 4u);
+
+#ifdef XE_TEXTURE_LOAD_RESOLUTION_SCALED
+  // For stacked textures, read individual blocks at 2x intervals to downsample
+  // from the scaled source buffer to unscaled output positions.
+  dont_flatten_xe if (load_info.is_stacked) {
+    uint4_xe blocks0, blocks1;
+    // Read 8 blocks from strided positions (0, 2, 4, 6, 8, 10, 12, 14 in scaled coords)
+    // Each read gets uint4, we extract the first component which is the block we want
+    blocks0.x = XeEndianSwap32(
+        array_buffer_load_xe(xe_texture_load_source,
+            XeTextureLoadStackedBlockOffset(load_info, block_index, 0u, 2u) >> 4u),
+        load_info.endian_32).x;
+    blocks0.y = XeEndianSwap32(
+        array_buffer_load_xe(xe_texture_load_source,
+            XeTextureLoadStackedBlockOffset(load_info, block_index, 1u, 2u) >> 4u),
+        load_info.endian_32).x;
+    blocks0.z = XeEndianSwap32(
+        array_buffer_load_xe(xe_texture_load_source,
+            XeTextureLoadStackedBlockOffset(load_info, block_index, 2u, 2u) >> 4u),
+        load_info.endian_32).x;
+    blocks0.w = XeEndianSwap32(
+        array_buffer_load_xe(xe_texture_load_source,
+            XeTextureLoadStackedBlockOffset(load_info, block_index, 3u, 2u) >> 4u),
+        load_info.endian_32).x;
+    blocks1.x = XeEndianSwap32(
+        array_buffer_load_xe(xe_texture_load_source,
+            XeTextureLoadStackedBlockOffset(load_info, block_index, 4u, 2u) >> 4u),
+        load_info.endian_32).x;
+    blocks1.y = XeEndianSwap32(
+        array_buffer_load_xe(xe_texture_load_source,
+            XeTextureLoadStackedBlockOffset(load_info, block_index, 5u, 2u) >> 4u),
+        load_info.endian_32).x;
+    blocks1.z = XeEndianSwap32(
+        array_buffer_load_xe(xe_texture_load_source,
+            XeTextureLoadStackedBlockOffset(load_info, block_index, 6u, 2u) >> 4u),
+        load_info.endian_32).x;
+    blocks1.w = XeEndianSwap32(
+        array_buffer_load_xe(xe_texture_load_source,
+            XeTextureLoadStackedBlockOffset(load_info, block_index, 7u, 2u) >> 4u),
+        load_info.endian_32).x;
+    array_buffer_store_xe(xe_texture_load_dest, block_offset_host,
+                          XE_TEXTURE_LOAD_32BPB_TRANSFORM(blocks0));
+    ++block_offset_host;
+    array_buffer_store_xe(xe_texture_load_dest, block_offset_host,
+                          XE_TEXTURE_LOAD_32BPB_TRANSFORM(blocks1));
+    return;
+  }
+#endif
+
   uint block_offset_guest =
       XeTextureLoadGuestBlockOffset(load_info, block_index, 4u, 2u) >> 4u;
   uint4_xe guest_blocks = XeEndianSwap32(

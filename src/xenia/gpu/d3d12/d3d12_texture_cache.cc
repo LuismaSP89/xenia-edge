@@ -1319,7 +1319,9 @@ std::unique_ptr<TextureCache::Texture> D3D12TextureCache::CreateTexture(
   desc.Alignment = 0;
   desc.Width = key.GetWidth();
   desc.Height = key.GetHeight();
-  if (key.scaled_resolve) {
+  bool is_stacked_2d = key.dimension == xenos::DataDimension::k2DOrStacked &&
+                         key.GetDepthOrArraySize() > 1;
+  if (key.scaled_resolve && !is_stacked_2d) {
     desc.Width *= draw_resolution_scale_x();
     desc.Height *= draw_resolution_scale_y();
   }
@@ -1376,6 +1378,8 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
       d3d12_texture.guest_layout();
   xenos::DataDimension dimension = texture_key.dimension;
   bool is_3d = dimension == xenos::DataDimension::k3D;
+  bool is_2d = dimension == xenos::DataDimension::k2DOrStacked;
+  bool is_stacked = !is_3d && (texture_key.GetDepthOrArraySize() > 1);
   uint32_t width = texture_key.GetWidth();
   uint32_t height = texture_key.GetHeight();
   uint32_t depth_or_array_size = texture_key.GetDepthOrArraySize();
@@ -1396,6 +1400,15 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
       texture_resolution_scaled ? draw_resolution_scale_x() : 1;
   uint32_t texture_resolution_scale_y =
       texture_resolution_scaled ? draw_resolution_scale_y() : 1;
+  // For stacked textures, we need to read from scaled source positions but
+  // output at 1x. source_resolution_scale stays at actual scale for reading,
+  // while texture_resolution_scale becomes 1 for output sizing.
+  uint32_t source_resolution_scale_x = texture_resolution_scale_x;
+  uint32_t source_resolution_scale_y = texture_resolution_scale_y;
+  if (is_stacked && texture_resolution_scaled) {
+    texture_resolution_scale_x = 1;
+    texture_resolution_scale_y = 1;
+  }
 
   // The loop counter can mean two things depending on whether the packed mip
   // tail is stored as mip 0, because in this case, it would be ambiguous since
@@ -1572,7 +1585,9 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
   load_constants.is_tiled_3d_endian_scale =
       uint32_t(texture_key.tiled) | (uint32_t(is_3d) << 1) |
       (uint32_t(texture_key.endianness) << 2) |
-      (texture_resolution_scale_x << 4) | (texture_resolution_scale_y << 7);
+      (texture_resolution_scale_x << 4) | (texture_resolution_scale_y << 7) |
+      (uint32_t(is_2d) << 10) | (uint32_t(is_stacked) << 11) |
+      (source_resolution_scale_x << 12) | (source_resolution_scale_y << 15);
 
   // The loop is slices within levels because the base and the levels may need
   // different portions of the scaled resolve virtual address space to be
@@ -1625,7 +1640,7 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
     if (!is_base) {
       load_constants.guest_offset +=
           guest_layout.mip_offsets_bytes[level] *
-          (texture_resolution_scale_x * texture_resolution_scale_y);
+          (source_resolution_scale_x * source_resolution_scale_y);
     }
     const texture_util::TextureGuestLayout::Level& level_guest_layout =
         is_base ? guest_layout.base : guest_layout.mips[level];
@@ -1683,7 +1698,7 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
 
     uint32_t level_array_slice_stride_bytes_scaled =
         level_guest_layout.array_slice_stride_bytes *
-        (texture_resolution_scale_x * texture_resolution_scale_y);
+        (source_resolution_scale_x * source_resolution_scale_y);
     for (uint32_t slice = 0; slice < array_size; ++slice) {
       if (slice != 0) {
         command_list.D3DSetComputeRoot32BitConstants(
