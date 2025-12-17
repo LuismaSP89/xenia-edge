@@ -53,6 +53,7 @@ namespace shaders {
 #include "xenia/gpu/shaders/bytecode/d3d12_5_1/apply_gamma_table_fxaa_luma_cs.h"
 #include "xenia/gpu/shaders/bytecode/d3d12_5_1/fxaa_cs.h"
 #include "xenia/gpu/shaders/bytecode/d3d12_5_1/fxaa_extreme_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_5_1/resolve_downscale_cs.h"
 }  // namespace shaders
 
 D3D12CommandProcessor::D3D12CommandProcessor(
@@ -1557,6 +1558,95 @@ bool D3D12CommandProcessor::SetupContext() {
     return false;
   }
 
+  // Resolve downscale compute shader for scaled resolution readback.
+  // Root parameter 0: Constants (scale_x, scale_y, pixel_size_log2, tile_count)
+  // Root parameter 1: Source SRV (ByteAddressBuffer)
+  // Root parameter 2: Destination UAV (RWByteAddressBuffer)
+  {
+    D3D12_ROOT_PARAMETER resolve_downscale_root_parameters[UINT(
+        ResolveDownscaleRootParameter::kCount)];
+    // Parameter 0: Constants.
+    resolve_downscale_root_parameters
+        [UINT(ResolveDownscaleRootParameter::kConstants)]
+            .ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    resolve_downscale_root_parameters
+        [UINT(ResolveDownscaleRootParameter::kConstants)]
+            .Constants.ShaderRegister = 0;
+    resolve_downscale_root_parameters
+        [UINT(ResolveDownscaleRootParameter::kConstants)]
+            .Constants.RegisterSpace = 0;
+    resolve_downscale_root_parameters
+        [UINT(ResolveDownscaleRootParameter::kConstants)]
+            .Constants.Num32BitValues =
+        sizeof(ResolveDownscaleConstants) / sizeof(uint32_t);
+    resolve_downscale_root_parameters
+        [UINT(ResolveDownscaleRootParameter::kConstants)]
+            .ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // Parameter 1: Source SRV.
+    D3D12_DESCRIPTOR_RANGE resolve_downscale_srv_range;
+    resolve_downscale_srv_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    resolve_downscale_srv_range.NumDescriptors = 1;
+    resolve_downscale_srv_range.BaseShaderRegister = 0;
+    resolve_downscale_srv_range.RegisterSpace = 0;
+    resolve_downscale_srv_range.OffsetInDescriptorsFromTableStart = 0;
+    resolve_downscale_root_parameters
+        [UINT(ResolveDownscaleRootParameter::kSource)]
+            .ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    resolve_downscale_root_parameters
+        [UINT(ResolveDownscaleRootParameter::kSource)]
+            .DescriptorTable.NumDescriptorRanges = 1;
+    resolve_downscale_root_parameters
+        [UINT(ResolveDownscaleRootParameter::kSource)]
+            .DescriptorTable.pDescriptorRanges = &resolve_downscale_srv_range;
+    resolve_downscale_root_parameters
+        [UINT(ResolveDownscaleRootParameter::kSource)]
+            .ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // Parameter 2: Destination UAV.
+    D3D12_DESCRIPTOR_RANGE resolve_downscale_uav_range;
+    resolve_downscale_uav_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    resolve_downscale_uav_range.NumDescriptors = 1;
+    resolve_downscale_uav_range.BaseShaderRegister = 0;
+    resolve_downscale_uav_range.RegisterSpace = 0;
+    resolve_downscale_uav_range.OffsetInDescriptorsFromTableStart = 0;
+    resolve_downscale_root_parameters
+        [UINT(ResolveDownscaleRootParameter::kDestination)]
+            .ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    resolve_downscale_root_parameters
+        [UINT(ResolveDownscaleRootParameter::kDestination)]
+            .DescriptorTable.NumDescriptorRanges = 1;
+    resolve_downscale_root_parameters
+        [UINT(ResolveDownscaleRootParameter::kDestination)]
+            .DescriptorTable.pDescriptorRanges = &resolve_downscale_uav_range;
+    resolve_downscale_root_parameters
+        [UINT(ResolveDownscaleRootParameter::kDestination)]
+            .ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    D3D12_ROOT_SIGNATURE_DESC resolve_downscale_root_signature_desc;
+    resolve_downscale_root_signature_desc.NumParameters =
+        UINT(ResolveDownscaleRootParameter::kCount);
+    resolve_downscale_root_signature_desc.pParameters =
+        resolve_downscale_root_parameters;
+    resolve_downscale_root_signature_desc.NumStaticSamplers = 0;
+    resolve_downscale_root_signature_desc.pStaticSamplers = nullptr;
+    resolve_downscale_root_signature_desc.Flags =
+        D3D12_ROOT_SIGNATURE_FLAG_NONE;
+    *(resolve_downscale_root_signature_.ReleaseAndGetAddressOf()) =
+        ui::d3d12::util::CreateRootSignature(
+            provider, resolve_downscale_root_signature_desc);
+    if (!resolve_downscale_root_signature_) {
+      XELOGE("Failed to create the resolve downscale root signature");
+      return false;
+    }
+    *(resolve_downscale_pipeline_.ReleaseAndGetAddressOf()) =
+        ui::d3d12::util::CreateComputePipeline(
+            device, shaders::resolve_downscale_cs,
+            sizeof(shaders::resolve_downscale_cs),
+            resolve_downscale_root_signature_.Get());
+    if (!resolve_downscale_pipeline_) {
+      XELOGE("Failed to create the resolve downscale compute pipeline");
+      return false;
+    }
+  }
+
   if (bindless_resources_used_) {
     // Create the system bindless descriptors once all resources are
     // initialized.
@@ -1770,6 +1860,11 @@ void D3D12CommandProcessor::ShutdownContext() {
   fxaa_extreme_pipeline_.Reset();
   fxaa_pipeline_.Reset();
   fxaa_root_signature_.Reset();
+
+  resolve_downscale_buffer_.Reset();
+  resolve_downscale_buffer_size_ = 0;
+  resolve_downscale_pipeline_.Reset();
+  resolve_downscale_root_signature_.Reset();
 
   apply_gamma_pwl_fxaa_luma_pipeline_.Reset();
   apply_gamma_pwl_pipeline_.Reset();
@@ -3384,6 +3479,246 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
 
       // Swap buffer index for next time this specific resolve address is used
       // This way next time we write to the other buffer and read from this one
+      rb.current_index = 1 - rb.current_index;
+    } else if (written_length) {
+      /* Scaled resolution readback path - GPU compute shader downscaling */
+      uint32_t scaled_length =
+          (uint32_t)texture_cache_->GetCurrentScaledResolveRangeLengthScaled();
+      uint64_t scaled_address =
+          texture_cache_->GetCurrentScaledResolveRangeStartScaled();
+
+      // Get format info for downscaling
+      auto copy_dest_info = register_file_->Get<reg::RB_COPY_DEST_INFO>();
+      const FormatInfo* format_info =
+          FormatInfo::Get((uint32_t)copy_dest_info.copy_dest_format);
+      uint32_t bits_per_pixel = format_info->bits_per_pixel;
+
+      uint32_t scale_x = texture_cache_->draw_resolution_scale_x();
+      uint32_t scale_y = texture_cache_->draw_resolution_scale_y();
+
+      assert_true(scale_x >= 1 &&
+                  scale_x <= TextureCache::kMaxDrawResolutionScaleAlongAxis);
+      assert_true(scale_y >= 1 &&
+                  scale_y <= TextureCache::kMaxDrawResolutionScaleAlongAxis);
+      assert_true(scale_x > 1 || scale_y > 1);
+      assert_true(bits_per_pixel == 8 || bits_per_pixel == 16 ||
+                  bits_per_pixel == 32 || bits_per_pixel == 64);
+
+      // Use the same keying as non-scaled path
+      uint64_t resolve_key =
+          MakeReadbackResolveKey(written_address, written_length);
+
+      ReadbackBuffer& rb = readback_buffers_[resolve_key];
+      rb.last_used_frame = frame_current_;
+
+      uint32_t write_index = rb.current_index;
+      // Readback buffer is now 1x size (downscaled), not scaled_length
+      uint32_t size = AlignReadbackBufferSize(written_length);
+
+      // Allocate/resize write buffer if needed (1x size now)
+      if (size > rb.sizes[write_index]) {
+        const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
+        ID3D12Device* device = provider.GetDevice();
+        D3D12_RESOURCE_DESC buffer_desc;
+        ui::d3d12::util::FillBufferResourceDesc(buffer_desc, size,
+                                                D3D12_RESOURCE_FLAG_NONE);
+        ID3D12Resource* buffer;
+        if (SUCCEEDED(device->CreateCommittedResource(
+                &ui::d3d12::util::kHeapPropertiesReadback,
+                provider.GetHeapFlagCreateNotZeroed(), &buffer_desc,
+                D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                IID_PPV_ARGS(&buffer)))) {
+          // Unmap and release old buffer
+          if (rb.buffers[write_index] != nullptr) {
+            if (rb.mapped_data[write_index] != nullptr) {
+              rb.buffers[write_index]->Unmap(0, nullptr);
+              rb.mapped_data[write_index] = nullptr;
+            }
+            rb.buffers[write_index]->Release();
+          }
+          rb.buffers[write_index] = buffer;
+          rb.sizes[write_index] = size;
+
+          // Map the new buffer persistently
+          D3D12_RANGE read_range = {0, size};
+          if (SUCCEEDED(
+                  buffer->Map(0, &read_range, &rb.mapped_data[write_index]))) {
+            // Successfully mapped
+          } else {
+            XELOGE("Failed to persistently map scaled readback buffer");
+            rb.mapped_data[write_index] = nullptr;
+          }
+        } else {
+          XELOGE("Failed to create a {} MB scaled readback buffer", size >> 20);
+          return true;
+        }
+      }
+
+      // Ensure intermediate buffer for GPU downscaling is large enough
+      // This buffer holds the downscaled (1x) data before copying to readback
+      uint32_t downscale_buffer_size = AlignReadbackBufferSize(written_length);
+      if (downscale_buffer_size > resolve_downscale_buffer_size_) {
+        const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
+        ID3D12Device* device = provider.GetDevice();
+        D3D12_RESOURCE_DESC buffer_desc;
+        ui::d3d12::util::FillBufferResourceDesc(
+            buffer_desc, downscale_buffer_size,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+        ID3D12Resource* buffer;
+        if (SUCCEEDED(device->CreateCommittedResource(
+                &ui::d3d12::util::kHeapPropertiesDefault,
+                provider.GetHeapFlagCreateNotZeroed(), &buffer_desc,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                IID_PPV_ARGS(&buffer)))) {
+          resolve_downscale_buffer_.Reset();
+          resolve_downscale_buffer_.Attach(buffer);
+          resolve_downscale_buffer_size_ = downscale_buffer_size;
+        } else {
+          XELOGE("Failed to create {} MB resolve downscale buffer",
+                 downscale_buffer_size >> 20);
+          return true;
+        }
+      }
+
+      // Get source buffer
+      size_t resolve_buffer_index =
+          texture_cache_->GetCurrentScaledResolveBufferIndexPublic();
+      ID3D12Resource* resolve_buffer =
+          texture_cache_->GetCurrentScaledResolveBufferResource();
+
+      // Allocate descriptors for SRV (source) and UAV (destination)
+      ui::d3d12::util::DescriptorCpuGpuHandlePair downscale_descriptors[2];
+      if (!RequestOneUseSingleViewDescriptors(2, downscale_descriptors)) {
+        XELOGE("Failed to allocate descriptors for resolve downscale");
+        return true;
+      }
+
+      const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
+      ID3D12Device* device = provider.GetDevice();
+
+      // Create SRV for source (scaled resolve buffer)
+      uint64_t source_offset =
+          scaled_address - (uint64_t(resolve_buffer_index) << 30);
+      // Align size for raw buffer view
+      uint32_t aligned_scaled_length =
+          (scaled_length + (D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT - 1)) &
+          ~(D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT - 1);
+      ui::d3d12::util::CreateBufferRawSRV(
+          device, downscale_descriptors[0].first, resolve_buffer,
+          aligned_scaled_length, source_offset);
+
+      // Create UAV for destination (downscale buffer)
+      uint32_t aligned_written_length =
+          (written_length + (D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT - 1)) &
+          ~(D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT - 1);
+      ui::d3d12::util::CreateBufferRawUAV(
+          device, downscale_descriptors[1].first,
+          resolve_downscale_buffer_.Get(), aligned_written_length, 0);
+
+      // Transition source to SRV state
+      PushUAVBarrier(resolve_buffer);
+      texture_cache_->TransitionCurrentScaledResolveRange(
+          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+      SubmitBarriers();
+
+      PushDebugMarker("Resolve Downscale: 0x%08X, %u bytes -> %u bytes",
+                      written_address, scaled_length, written_length);
+
+      // Set up compute shader
+      SetExternalPipeline(resolve_downscale_pipeline_.Get());
+      deferred_command_list_.D3DSetComputeRootSignature(
+          resolve_downscale_root_signature_.Get());
+
+      // Set constants
+      uint32_t pixel_size_log2;
+      xe::bit_scan_forward(bits_per_pixel >> 3, &pixel_size_log2);
+      uint32_t bytes_per_pixel = 1u << pixel_size_log2;
+      uint32_t tile_size_1x = 32 * 32 * bytes_per_pixel;
+      uint32_t tile_count = written_length / tile_size_1x;
+
+      ResolveDownscaleConstants constants;
+      constants.scale_x = scale_x;
+      constants.scale_y = scale_y;
+      constants.pixel_size_log2 = pixel_size_log2;
+      constants.tile_count = tile_count;
+      deferred_command_list_.D3DSetComputeRoot32BitConstants(
+          UINT(ResolveDownscaleRootParameter::kConstants),
+          sizeof(constants) / sizeof(uint32_t), &constants, 0);
+
+      // Set descriptor tables
+      deferred_command_list_.D3DSetComputeRootDescriptorTable(
+          UINT(ResolveDownscaleRootParameter::kSource),
+          downscale_descriptors[0].second);
+      deferred_command_list_.D3DSetComputeRootDescriptorTable(
+          UINT(ResolveDownscaleRootParameter::kDestination),
+          downscale_descriptors[1].second);
+
+      // Dispatch compute shader - one thread group per 32x32 tile
+      deferred_command_list_.D3DDispatch(tile_count, 1, 1);
+
+      // Transition downscale buffer to copy source
+      PushUAVBarrier(resolve_downscale_buffer_.Get());
+      PushTransitionBarrier(resolve_downscale_buffer_.Get(),
+                            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                            D3D12_RESOURCE_STATE_COPY_SOURCE);
+      SubmitBarriers();
+
+      // Copy downscaled data to readback buffer
+      deferred_command_list_.D3DCopyBufferRegion(
+          rb.buffers[write_index], 0, resolve_downscale_buffer_.Get(), 0,
+          written_length);
+
+      // Transition downscale buffer back to UAV for next use
+      PushTransitionBarrier(resolve_downscale_buffer_.Get(),
+                            D3D12_RESOURCE_STATE_COPY_SOURCE,
+                            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+      PopDebugMarker();
+
+      ReadbackResolveMode readback_mode = GetReadbackResolveMode();
+      bool use_delayed_sync = (readback_mode == ReadbackResolveMode::kFast ||
+                               readback_mode == ReadbackResolveMode::kSome);
+      uint32_t read_index = write_index;
+
+      if (use_delayed_sync) {
+        // Use previous frame's data (avoid stall)
+        read_index = 1 - write_index;
+      } else {
+        // Wait for GPU to finish (accurate but slow)
+        if (!AwaitAllQueueOperationsCompletion()) {
+          return true;
+        }
+      }
+
+      // Check if we have valid data to read from
+      bool is_cache_miss = false;
+      if (use_delayed_sync && (rb.buffers[read_index] == nullptr ||
+                               written_length > rb.sizes[read_index] ||
+                               rb.mapped_data[read_index] == nullptr)) {
+        // Cache miss - need to sync and use current buffer
+        is_cache_miss = true;
+        read_index = write_index;
+        if (!AwaitAllQueueOperationsCompletion()) {
+          return true;
+        }
+      }
+
+      // Copy to guest memory
+      // "some" mode: only copy on cache miss (saves CPU)
+      // "fast" mode: always copy (1 frame behind, no GPU stall)
+      // "full" mode: always copy (GPU sync already done above)
+      bool should_copy =
+          (readback_mode == ReadbackResolveMode::kSome) ? is_cache_miss : true;
+
+      // Simple memcpy - data is already downscaled by GPU
+      if (should_copy && rb.mapped_data[read_index] != nullptr &&
+          written_length <= rb.sizes[read_index]) {
+        uint8_t* physaddr = memory_->TranslatePhysical(written_address);
+        memory::vastcpy(physaddr, (uint8_t*)rb.mapped_data[read_index],
+                        written_length);
+      }
+
+      // Swap buffer index for next time
       rb.current_index = 1 - rb.current_index;
     }
   } else {
