@@ -16,6 +16,7 @@
 #include <cstring>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -64,18 +65,32 @@ class VulkanPipelineCache {
     // destroyed by it while the pipeline cache is active.
     const PipelineLayoutProvider* pipeline_layout;
 
+    // Placeholder pipeline support for reduced stutter.
+    // When true, the current pipeline uses a placeholder pixel shader and
+    // the real pipeline is being compiled in the background.
+    std::atomic<bool> is_placeholder{false};
+    // Real pipeline layout (may differ from placeholder's minimal layout).
+    // Set when real pipeline is created.
+    std::atomic<const PipelineLayoutProvider*> real_pipeline_layout{nullptr};
+
     Pipeline(const PipelineLayoutProvider* pipeline_layout_provider)
         : pipeline_layout(pipeline_layout_provider) {}
 
     // Copy constructor needed for unordered_map
     Pipeline(const Pipeline& other)
         : pipeline(other.pipeline.load(std::memory_order_acquire)),
-          pipeline_layout(other.pipeline_layout) {}
+          pipeline_layout(other.pipeline_layout),
+          is_placeholder(other.is_placeholder.load(std::memory_order_acquire)),
+          real_pipeline_layout(
+              other.real_pipeline_layout.load(std::memory_order_acquire)) {}
 
     // Move constructor
     Pipeline(Pipeline&& other) noexcept
         : pipeline(other.pipeline.load(std::memory_order_acquire)),
-          pipeline_layout(other.pipeline_layout) {}
+          pipeline_layout(other.pipeline_layout),
+          is_placeholder(other.is_placeholder.load(std::memory_order_acquire)),
+          real_pipeline_layout(
+              other.real_pipeline_layout.load(std::memory_order_acquire)) {}
 
     // Deleted copy assignment to prevent accidental copying
     Pipeline& operator=(const Pipeline&) = delete;
@@ -246,6 +261,9 @@ class VulkanPipelineCache {
     bool operator==(const PipelineDescription& description) const {
       return std::memcmp(this, &description, sizeof(*this)) == 0;
     }
+    bool operator<(const PipelineDescription& description) const {
+      return std::memcmp(this, &description, sizeof(*this)) < 0;
+    }
     void Reset() { std::memset(this, 0, sizeof(*this)); }
     uint64_t GetHash() const { return XXH3_64bits(this, sizeof(*this)); }
     struct Hasher {
@@ -331,8 +349,18 @@ class VulkanPipelineCache {
   // Can be called from creation threads - all needed data must be fully set up
   // at the point of the call: shaders must be translated, pipeline layout and
   // render pass objects must be available.
+  // If fragment_shader_override is not VK_NULL_HANDLE, it is used instead of
+  // the pixel shader from creation_arguments (for placeholder pipelines).
   bool EnsurePipelineCreated(
-      const PipelineCreationArguments& creation_arguments);
+      const PipelineCreationArguments& creation_arguments,
+      VkShaderModule fragment_shader_override = VK_NULL_HANDLE);
+
+  // Creates a placeholder pipeline using the placeholder pixel shader.
+  // Used for pipeline hot-swap to reduce stutter.
+  bool EnsurePipelineCreatedWithPlaceholder(
+      const PipelineCreationArguments& creation_arguments) {
+    return EnsurePipelineCreated(creation_arguments, placeholder_pixel_shader_);
+  }
 
   VulkanCommandProcessor& command_processor_;
   const RegisterFile& register_file_;
@@ -379,6 +407,10 @@ class VulkanPipelineCache {
   // shader interlock when no Xenos pixel shader provided.
   VkShaderModule depth_only_fragment_shader_ = VK_NULL_HANDLE;
 
+  // Placeholder pixel shader for pipeline hot-swap to reduce stutter.
+  // Outputs transparent black while the real shader compiles in background.
+  VkShaderModule placeholder_pixel_shader_ = VK_NULL_HANDLE;
+
   // Tessellation shaders.
   // Vertex shaders for tessellation - pass indices/factors to TCS.
   VkShaderModule tessellation_indexed_vs_ = VK_NULL_HANDLE;
@@ -402,8 +434,12 @@ class VulkanPipelineCache {
   // Vulkan pipeline cache for faster pipeline creation.
   VkPipelineCache vk_pipeline_cache_ = VK_NULL_HANDLE;
 
-  std::unordered_map<PipelineDescription, Pipeline, PipelineDescription::Hasher>
-      pipelines_;
+  // Using std::map instead of unordered_map because std::map does NOT
+  // invalidate iterators/references on insert - only on erase. This is
+  // critical because we pass pointers to map elements to background threads
+  // for async pipeline creation, and with placeholder pipelines enabled,
+  // new insertions can happen before background threads finish.
+  std::map<PipelineDescription, Pipeline> pipelines_;
 
   // Previously used pipeline, to avoid lookups if the state wasn't changed.
   std::pair<const PipelineDescription, Pipeline>* last_pipeline_ = nullptr;
@@ -434,9 +470,14 @@ class VulkanPipelineCache {
   void OptimizationThread();
   void QueueShaderForOptimization(VulkanShader::VulkanTranslation* translation);
 
-  // Deferred destruction of replaced shader modules
-  void ProcessDeferredModuleDestructions();
+  // Deferred destruction of replaced shader modules and pipelines.
+  // Pipelines are only destroyed after the GPU submission that might reference
+  // them has completed (tracked via submission numbers from command processor).
+  void ProcessDeferredDestructions();
   std::vector<VkShaderModule> deferred_destroy_shader_modules_;
+  // Pipelines pending destruction, paired with the submission number they were
+  // last potentially used in. Only destroyed when that submission completes.
+  std::vector<std::pair<VkPipeline, uint64_t>> deferred_destroy_pipelines_;
   std::mutex deferred_destroy_mutex_;
 };
 

@@ -32,7 +32,7 @@
 #include "xenia/ui/vulkan/spirv_tools_context.h"
 #include "xenia/ui/vulkan/vulkan_util.h"
 
-// Tessellation shader bytecode.
+// Shader bytecode.
 namespace shaders {
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/adaptive_quad_hs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/adaptive_triangle_hs.h"
@@ -46,6 +46,8 @@ namespace shaders {
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/discrete_triangle_3cp_hs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/tessellation_adaptive_vs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/tessellation_indexed_vs.h"
+// Placeholder pixel shader for pipeline hot-swap.
+#include "xenia/gpu/shaders/bytecode/vulkan_spirv/placeholder_ps.h"
 }  // namespace shaders
 
 DEFINE_int32(
@@ -69,6 +71,15 @@ DEFINE_bool(
     "optimized immediately during translation, blocking the main thread. "
     "This increases shader compilation time but ensures all shaders are "
     "optimized before use. Can be combined with background optimization.",
+    "Vulkan");
+
+DEFINE_bool(
+    vulkan_pipeline_placeholder, true,
+    "Enable placeholder pipeline hot-swap for reduced stutter. When enabled, "
+    "a simple placeholder pipeline is created immediately while the real "
+    "pipeline compiles in the background, then hot-swapped when ready. "
+    "This significantly reduces shader compilation stutter at the cost of "
+    "brief visual artifacts (transparent rendering) for new shaders.",
     "Vulkan");
 
 namespace xe {
@@ -197,6 +208,15 @@ bool VulkanPipelineCache::Initialize() {
     }
   }
 
+  // Create placeholder pixel shader for pipeline hot-swap (stutter reduction).
+  placeholder_pixel_shader_ = ui::vulkan::util::CreateShaderModule(
+      vulkan_device, shaders::placeholder_ps, sizeof(shaders::placeholder_ps));
+  if (placeholder_pixel_shader_ == VK_NULL_HANDLE) {
+    XELOGW(
+        "VulkanPipelineCache: Failed to create placeholder pixel shader - "
+        "pipeline hot-swap will not be available");
+  }
+
   // Create Vulkan pipeline cache for faster pipeline creation.
   VkPipelineCacheCreateInfo pipeline_cache_create_info = {};
   pipeline_cache_create_info.sType =
@@ -278,13 +298,28 @@ void VulkanPipelineCache::Shutdown() {
     optimization_thread_.reset();
   }
 
-  // Process any remaining deferred destructions
-  ProcessDeferredModuleDestructions();
-
   const ui::vulkan::VulkanDevice* const vulkan_device =
       command_processor_.GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
   const VkDevice device = vulkan_device->device();
+
+  // Process any remaining deferred destructions (force destroy all since
+  // device should be idle at shutdown).
+  {
+    std::lock_guard<std::mutex> lock(deferred_destroy_mutex_);
+    for (VkShaderModule module : deferred_destroy_shader_modules_) {
+      if (module != VK_NULL_HANDLE) {
+        dfn.vkDestroyShaderModule(device, module, nullptr);
+      }
+    }
+    deferred_destroy_shader_modules_.clear();
+    for (const auto& pipeline_pair : deferred_destroy_pipelines_) {
+      if (pipeline_pair.first != VK_NULL_HANDLE) {
+        dfn.vkDestroyPipeline(device, pipeline_pair.first, nullptr);
+      }
+    }
+    deferred_destroy_pipelines_.clear();
+  }
 
   // Destroy all pipelines.
   last_pipeline_ = nullptr;
@@ -304,6 +339,8 @@ void VulkanPipelineCache::Shutdown() {
   // Destroy all internal shaders.
   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device,
                                          depth_only_fragment_shader_);
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device,
+                                         placeholder_pixel_shader_);
   // Destroy tessellation shaders.
   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device,
                                          tessellation_indexed_vs_);
@@ -635,12 +672,80 @@ bool VulkanPipelineCache::ConfigurePipeline(
     }
   }
 
-  if (!creation_threads_.empty()) {
-    // Submit the pipeline for creation to any available thread.
-    {
-      std::lock_guard<std::mutex> lock(creation_request_lock_);
-      creation_queue_.emplace_back();
-      PipelineCreationArguments& creation_arguments = creation_queue_.back();
+  // Pipeline hot-swap: If enabled, we have creation threads and a pixel shader,
+  // create a placeholder pipeline immediately (fast compile) and queue the real
+  // pipeline creation in the background. This reduces stutter from pipeline
+  // compilation.
+  bool use_placeholder = cvars::vulkan_pipeline_placeholder &&
+                         !creation_threads_.empty() && pixel_shader &&
+                         placeholder_pixel_shader_ != VK_NULL_HANDLE;
+
+  if (use_placeholder) {
+    // Create placeholder pipeline immediately (uses simple PS, fast compile).
+    // Set is_placeholder BEFORE creating the pipeline to avoid race condition
+    // with the creation thread checking this flag.
+    pipeline_pair.second.is_placeholder.store(true, std::memory_order_release);
+    pipeline_pair.second.real_pipeline_layout.store(pipeline_layout,
+                                                    std::memory_order_release);
+
+    PipelineCreationArguments placeholder_args;
+    placeholder_args.pipeline = &pipeline_pair;
+    placeholder_args.vertex_shader = vertex_shader;
+    placeholder_args.pixel_shader = nullptr;  // Will use placeholder PS
+    placeholder_args.geometry_shader = geometry_shader;
+    placeholder_args.tessellation_vertex_shader = tessellation_vertex_shader;
+    placeholder_args.tessellation_control_shader = tessellation_control_shader;
+    placeholder_args.render_pass = render_pass;
+
+    if (EnsurePipelineCreatedWithPlaceholder(placeholder_args)) {
+      // Queue real pipeline creation in background.
+      {
+        std::lock_guard<std::mutex> lock(creation_request_lock_);
+        creation_queue_.emplace_back();
+        PipelineCreationArguments& creation_arguments = creation_queue_.back();
+        creation_arguments.pipeline = &pipeline_pair;
+        creation_arguments.vertex_shader = vertex_shader;
+        creation_arguments.pixel_shader = pixel_shader;
+        creation_arguments.geometry_shader = geometry_shader;
+        creation_arguments.tessellation_vertex_shader =
+            tessellation_vertex_shader;
+        creation_arguments.tessellation_control_shader =
+            tessellation_control_shader;
+        creation_arguments.render_pass = render_pass;
+      }
+      creation_request_cond_.notify_one();
+    } else {
+      // Placeholder creation failed, fall back to queuing real pipeline.
+      // Reset the flags we set earlier.
+      pipeline_pair.second.is_placeholder.store(false,
+                                                std::memory_order_release);
+      pipeline_pair.second.real_pipeline_layout.store(
+          nullptr, std::memory_order_release);
+      use_placeholder = false;
+    }
+  }
+
+  if (!use_placeholder) {
+    if (!creation_threads_.empty()) {
+      // Submit the pipeline for creation to any available thread.
+      {
+        std::lock_guard<std::mutex> lock(creation_request_lock_);
+        creation_queue_.emplace_back();
+        PipelineCreationArguments& creation_arguments = creation_queue_.back();
+        creation_arguments.pipeline = &pipeline_pair;
+        creation_arguments.vertex_shader = vertex_shader;
+        creation_arguments.pixel_shader = pixel_shader;
+        creation_arguments.geometry_shader = geometry_shader;
+        creation_arguments.tessellation_vertex_shader =
+            tessellation_vertex_shader;
+        creation_arguments.tessellation_control_shader =
+            tessellation_control_shader;
+        creation_arguments.render_pass = render_pass;
+      }
+      creation_request_cond_.notify_one();
+    } else {
+      // Create the pipeline synchronously.
+      PipelineCreationArguments creation_arguments;
       creation_arguments.pipeline = &pipeline_pair;
       creation_arguments.vertex_shader = vertex_shader;
       creation_arguments.pixel_shader = pixel_shader;
@@ -650,21 +755,9 @@ bool VulkanPipelineCache::ConfigurePipeline(
       creation_arguments.tessellation_control_shader =
           tessellation_control_shader;
       creation_arguments.render_pass = render_pass;
-    }
-    creation_request_cond_.notify_one();
-  } else {
-    // Create the pipeline synchronously.
-    PipelineCreationArguments creation_arguments;
-    creation_arguments.pipeline = &pipeline_pair;
-    creation_arguments.vertex_shader = vertex_shader;
-    creation_arguments.pixel_shader = pixel_shader;
-    creation_arguments.geometry_shader = geometry_shader;
-    creation_arguments.tessellation_vertex_shader = tessellation_vertex_shader;
-    creation_arguments.tessellation_control_shader =
-        tessellation_control_shader;
-    creation_arguments.render_pass = render_pass;
-    if (!EnsurePipelineCreated(creation_arguments)) {
-      return false;
+      if (!EnsurePipelineCreated(creation_arguments)) {
+        return false;
+      }
     }
   }
 
@@ -676,7 +769,7 @@ bool VulkanPipelineCache::ConfigurePipeline(
 void VulkanPipelineCache::EndSubmission() {
   if (creation_threads_.empty()) {
     // Process deferred destructions when GPU is idle
-    ProcessDeferredModuleDestructions();
+    ProcessDeferredDestructions();
     return;
   }
   // Await creation of all queued pipelines.
@@ -699,7 +792,7 @@ void VulkanPipelineCache::EndSubmission() {
   }
 
   // Process deferred destructions after waiting for pipelines
-  ProcessDeferredModuleDestructions();
+  ProcessDeferredDestructions();
 }
 
 bool VulkanPipelineCache::IsCreatingPipelines() {
@@ -2344,10 +2437,24 @@ VkShaderModule VulkanPipelineCache::GetTessellationVertexShader(
 }
 
 bool VulkanPipelineCache::EnsurePipelineCreated(
-    const PipelineCreationArguments& creation_arguments) {
-  if (creation_arguments.pipeline->second.pipeline.load(
-          std::memory_order_acquire) != VK_NULL_HANDLE) {
-    return true;
+    const PipelineCreationArguments& creation_arguments,
+    VkShaderModule fragment_shader_override) {
+  // Check if we already have a pipeline.
+  // If it's a placeholder and we're not creating another placeholder,
+  // we need to replace it with the real pipeline.
+  VkPipeline existing_pipeline =
+      creation_arguments.pipeline->second.pipeline.load(
+          std::memory_order_acquire);
+  bool is_placeholder = creation_arguments.pipeline->second.is_placeholder.load(
+      std::memory_order_acquire);
+  bool creating_placeholder = fragment_shader_override != VK_NULL_HANDLE;
+
+  if (existing_pipeline != VK_NULL_HANDLE) {
+    if (!is_placeholder || creating_placeholder) {
+      // Already have a real pipeline, or trying to create another placeholder.
+      return true;
+    }
+    // Have a placeholder, and we're creating the real pipeline to replace it.
   }
 
   // This function preferably should validate the description to prevent
@@ -2474,7 +2581,10 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
   shader_stage_fragment.module = VK_NULL_HANDLE;
   shader_stage_fragment.pName = "main";
   shader_stage_fragment.pSpecializationInfo = nullptr;
-  if (creation_arguments.pixel_shader) {
+  if (fragment_shader_override != VK_NULL_HANDLE) {
+    // Use the override shader (for placeholder pipelines).
+    shader_stage_fragment.module = fragment_shader_override;
+  } else if (creation_arguments.pixel_shader) {
     assert_true(creation_arguments.pixel_shader->is_translated());
     if (!creation_arguments.pixel_shader->is_valid()) {
       return false;
@@ -2853,8 +2963,29 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
     }
     return false;
   }
-  creation_arguments.pipeline->second.pipeline.store(pipeline,
-                                                     std::memory_order_release);
+
+  // Store the new pipeline, handling placeholder hot-swap.
+  VkPipeline old_pipeline =
+      creation_arguments.pipeline->second.pipeline.exchange(
+          pipeline, std::memory_order_acq_rel);
+
+  if (old_pipeline != VK_NULL_HANDLE) {
+    // We're replacing a placeholder pipeline with the real one.
+    // Queue the old placeholder for deferred destruction, recording the
+    // current submission number so we only destroy after the GPU is done.
+    uint64_t current_submission = command_processor_.GetCurrentSubmission();
+    {
+      std::lock_guard<std::mutex> lock(deferred_destroy_mutex_);
+      deferred_destroy_pipelines_.emplace_back(old_pipeline, current_submission);
+    }
+  }
+
+  // Mark as no longer a placeholder (for the case where we just created real).
+  if (!creating_placeholder) {
+    creation_arguments.pipeline->second.is_placeholder.store(
+        false, std::memory_order_release);
+  }
+
   return true;
 }
 
@@ -2878,19 +3009,36 @@ void VulkanPipelineCache::QueueShaderForOptimization(
   optimization_queue_cond_.notify_one();
 }
 
-void VulkanPipelineCache::ProcessDeferredModuleDestructions() {
+void VulkanPipelineCache::ProcessDeferredDestructions() {
   std::vector<VkShaderModule> modules_to_destroy;
+  std::vector<VkPipeline> pipelines_to_destroy;
+
+  uint64_t completed_submission = command_processor_.GetCompletedSubmission();
+
   {
     std::lock_guard<std::mutex> lock(deferred_destroy_mutex_);
-    if (deferred_destroy_shader_modules_.empty()) {
+    if (deferred_destroy_shader_modules_.empty() &&
+        deferred_destroy_pipelines_.empty()) {
       return;
     }
     modules_to_destroy = std::move(deferred_destroy_shader_modules_);
     deferred_destroy_shader_modules_.clear();
+
+    // Only destroy pipelines whose submission has completed on the GPU.
+    // Keep pipelines that are still potentially in-flight.
+    auto it = deferred_destroy_pipelines_.begin();
+    while (it != deferred_destroy_pipelines_.end()) {
+      if (it->second <= completed_submission) {
+        // This submission has completed, safe to destroy.
+        pipelines_to_destroy.push_back(it->first);
+        it = deferred_destroy_pipelines_.erase(it);
+      } else {
+        ++it;
+      }
+    }
   }
 
-  // Destroy the modules now that we know GPU is idle or we've waited for
-  // submissions
+  // Destroy the modules and pipelines now that we know GPU is done with them.
   const ui::vulkan::VulkanDevice* vulkan_device =
       command_processor_.GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
@@ -2899,6 +3047,12 @@ void VulkanPipelineCache::ProcessDeferredModuleDestructions() {
   for (VkShaderModule module : modules_to_destroy) {
     if (module != VK_NULL_HANDLE) {
       dfn.vkDestroyShaderModule(device, module, nullptr);
+    }
+  }
+
+  for (VkPipeline pipeline : pipelines_to_destroy) {
+    if (pipeline != VK_NULL_HANDLE) {
+      dfn.vkDestroyPipeline(device, pipeline, nullptr);
     }
   }
 }
