@@ -2384,7 +2384,19 @@ bool VulkanCommandProcessor::SubmitBarriers(bool force_end_render_pass) {
     }
     return false;
   }
-  EndRenderPass();
+
+  // Check if we have any image barriers - these require ending the render pass.
+  // Buffer-only barriers can be issued inside the render pass, avoiding costly
+  // render pass restarts.
+  bool has_image_barriers = !pending_barriers_image_memory_barriers_.empty();
+
+  // Only end render pass if we have image barriers or explicitly requested.
+  // Buffer barriers for non-attachment resources (like shared memory) can be
+  // issued inside a render pass in Vulkan.
+  if (has_image_barriers || force_end_render_pass) {
+    EndRenderPass();
+  }
+
   for (auto it = pending_barriers_.cbegin(); it != pending_barriers_.cend();
        ++it) {
     auto it_next = std::next(it);
