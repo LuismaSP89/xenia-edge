@@ -30,20 +30,6 @@ namespace ui {
 
 using xe::ui::SafeQString;
 
-#if XE_PLATFORM_WIN32
-// Detect if running under Wine by checking for wine_get_version in ntdll
-static bool IsRunningOnWine() {
-  static bool is_wine = []() {
-    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    if (ntdll) {
-      return GetProcAddress(ntdll, "wine_get_version") != nullptr;
-    }
-    return false;
-  }();
-  return is_wine;
-}
-#endif
-
 class QtFilePicker : public FilePicker {
  public:
   QtFilePicker();

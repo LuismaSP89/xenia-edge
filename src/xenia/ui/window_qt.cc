@@ -42,6 +42,8 @@
 // Include Qt private headers for Wayland support on Linux only
 // (path is relative to QtGui/<version>/QtGui which is in include path)
 #include <qpa/qplatformwindow_p.h>
+#elif defined(XE_PLATFORM_WIN32)
+#include "xenia/base/platform_win.h"
 #endif
 
 // Initialize Qt resources - must be outside of namespace scope
@@ -206,12 +208,18 @@ bool QtWindow::OpenImpl() {
 
 #if defined(XE_PLATFORM_WIN32)
     // On Windows, also set via Win32 API for taskbar
-    HWND hwnd = reinterpret_cast<HWND>(qwindow_->winId());
-    if (hwnd) {
-      HICON hicon = app_icon.pixmap(32, 32).toImage().toHICON();
-      if (hicon) {
-        SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hicon);
-        SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hicon);
+    // Skip under Wine - Qt handles icons better there, Wine's toHICON is buggy
+    if (!IsRunningOnWine()) {
+      HWND hwnd = reinterpret_cast<HWND>(qwindow_->winId());
+      if (hwnd) {
+        HICON hicon_big = app_icon.pixmap(64, 64).toImage().toHICON();
+        HICON hicon_small = app_icon.pixmap(32, 32).toImage().toHICON();
+        if (hicon_big) {
+          SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hicon_big);
+        }
+        if (hicon_small) {
+          SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hicon_small);
+        }
       }
     }
 #endif
@@ -367,12 +375,16 @@ void QtWindow::LoadAndApplyIcon(const void* buffer, size_t size,
 
 #if defined(XE_PLATFORM_WIN32)
       // On Windows, also set via Win32 API for taskbar
+      // Use larger icons for better quality (game icons are typically 64x64)
       HWND hwnd = reinterpret_cast<HWND>(qwindow_->winId());
       if (hwnd) {
-        HICON hicon = icon.pixmap(32, 32).toImage().toHICON();
-        if (hicon) {
-          SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hicon);
-          SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hicon);
+        HICON hicon_big = icon.pixmap(128, 128).toImage().toHICON();
+        HICON hicon_small = icon.pixmap(64, 64).toImage().toHICON();
+        if (hicon_big) {
+          SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hicon_big);
+        }
+        if (hicon_small) {
+          SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hicon_small);
         }
       }
 #endif

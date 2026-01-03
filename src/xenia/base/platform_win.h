@@ -81,4 +81,17 @@ static volatile _KSYSTEM_TIME* GetKUserSharedSystemTime() {
       KUserShared() + KSUER_SHARED_SYSTEMTIME_OFFSET);
 }
 #endif
+
+// Detect if running under Wine by checking for wine_get_version in ntdll
+inline bool IsRunningOnWine() {
+  static bool is_wine = []() {
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (ntdll) {
+      return GetProcAddress(ntdll, "wine_get_version") != nullptr;
+    }
+    return false;
+  }();
+  return is_wine;
+}
+
 #endif  // XENIA_BASE_PLATFORM_WIN_H_
