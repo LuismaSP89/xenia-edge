@@ -160,71 +160,51 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
 #endif
 
             while (frame_limiter_worker_running_) {
-              // Read cvars each frame to allow runtime changes
-              uint64_t normalized_framerate_limit =
-                  std::max<uint64_t>(0, cvars::framerate_limit);
+              // Read vsync cvar each frame to allow runtime changes
+              // vsync=true: Fire vblanks at fixed rate (50Hz PAL, 60Hz NTSC)
+              // vsync=false: Fire vblanks as fast as possible (unlimited)
+              // Note: framerate_limit is handled separately at IssueSwap for
+              // host presentation throttling
               bool vsync_enabled = cvars::vsync;
-
-              // If VSYNC is enabled, but frames are not limited,
-              // lock framerate at default value of 60
-              if (normalized_framerate_limit == 0 && vsync_enabled)
-                normalized_framerate_limit = 60;
-
-              const double vsync_duration_d =
-                  vsync_enabled
-                      ? std::max<double>(
-                            5.0, 1000.0 / static_cast<double>(
-                                              normalized_framerate_limit))
-                      : 1.0;
 
               register_file()->values[XE_GPU_REG_D1MODE_V_COUNTER] +=
                   GetInternalDisplayResolution().second;
 
 #if XE_PLATFORM_WIN32
               if (vsync_enabled) {
-                const uint64_t current_time = Clock::QueryGuestTickCount();
+                // Fixed vblank rate mode - use accurate timing (time-gating +
+                // 90% sleep + 10% spin)
+                const uint32_t vblank_hz = GetGuestVblankRateHz();
                 const uint64_t tick_freq = Clock::guest_tick_frequency();
+                const uint64_t target_duration_ticks = tick_freq / vblank_hz;
+
+                const uint64_t current_time = Clock::QueryGuestTickCount();
                 const uint64_t time_delta = current_time - last_frame_time;
-                const double elapsed_d =
-                    static_cast<double>(time_delta) /
-                    (static_cast<double>(tick_freq) / 1000.0);
-                if (elapsed_d >= vsync_duration_d) {
-                  last_frame_time = current_time;
+                if (time_delta >= target_duration_ticks) {
+                  // Advance by target duration to prevent drift
+                  last_frame_time += target_duration_ticks;
 
                   MarkVblank();
                   const uint64_t estimated_nanoseconds = static_cast<uint64_t>(
-                      (vsync_duration_d * 1000000.0) *
-                      duration_scalar);  // 1000 microseconds = 1 ms
+                      (1000000000.0 / static_cast<double>(vblank_hz)) *
+                      duration_scalar);
 
                   threading::NanoSleep(estimated_nanoseconds);
                 }
-              }
-
-              if (!vsync_enabled) {
+              } else {
+                // Unlimited mode (vsync=false)
+                // Fire vblanks as fast as possible for games using delta time
                 MarkVblank();
-                if (normalized_framerate_limit > 0) {
-                  // framerate_limit is over 0, vsync disabled
-                  //  - No VSYNC + limited frames defined by user
-                  uint64_t framerate_limited_sleep_time =
-                      1000000000 / normalized_framerate_limit;
-                  xe::threading::NanoSleep(framerate_limited_sleep_time);
-                } else {
-                  // framerate_limit is 0, vsync disabled
-                  //  - No VSYNC + unlimited frames
-                  xe::threading::Sleep(std::chrono::milliseconds(1));
-                }
+                xe::threading::Sleep(std::chrono::milliseconds(1));
               }
 #endif
 #if XE_PLATFORM_LINUX
               // Linux: Use simplified timing logic to avoid oversleeping
               MarkVblank();
 
-              if (vsync_enabled || normalized_framerate_limit > 0) {
-                uint64_t sleep_duration_ns =
-                    static_cast<uint64_t>(vsync_duration_d * 1000000.0);
-                if (!vsync_enabled && normalized_framerate_limit > 0) {
-                  sleep_duration_ns = 1000000000 / normalized_framerate_limit;
-                }
+              if (vsync_enabled) {
+                const uint32_t vblank_hz = GetGuestVblankRateHz();
+                uint64_t sleep_duration_ns = 1000000000 / vblank_hz;
                 threading::NanoSleep(sleep_duration_ns);
               } else {
                 xe::threading::Sleep(std::chrono::milliseconds(1));
