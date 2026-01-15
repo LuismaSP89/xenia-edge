@@ -629,7 +629,7 @@ X_STATUS XSocket::GetPeerName(uint8_t* buf, int* buf_len) {
   return X_STATUS_SUCCESS;
 }
 
-uint32_t XSocket::GetLastWSAError() const { return last_error_; }
+uint32_t XSocket::XWSAGetLastError() const { return last_error_; }
 
 }  // namespace kernel
 }  // namespace xe

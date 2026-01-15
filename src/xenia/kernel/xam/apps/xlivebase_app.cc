@@ -80,6 +80,12 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message,
              buffer_length);
       return 0x80151802;  // X_ONLINE_E_LOGON_NOT_LOGGED_ON
     }
+    case 0x00058009: {
+      // XContentGetMarketplaceCounts - returns marketplace offer counts
+      XELOGD("XContentGetMarketplaceCounts({:08X}, {:08X})", buffer_ptr,
+             buffer_length);
+      return X_E_SUCCESS;
+    }
     case 0x00058020: {
       // 0x00058004 is called right before this.
       // We should create a XamEnumerate-able empty list here, but I'm not

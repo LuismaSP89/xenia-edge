@@ -10,7 +10,10 @@
 #include "xenia/kernel/xam/apps/xgi_app.h"
 #include "xenia/kernel/xsession.h"
 
+#include <cstring>
+
 #include "xenia/base/logging.h"
+#include "xenia/kernel/xam/net_utils.h"
 
 namespace xe {
 namespace kernel {
@@ -167,8 +170,6 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       return X_E_SUCCESS;
     }
     case 0x000B0010: {
-      XELOGD("XSessionCreate({:08X}, {:08X}), implemented in netplay",
-             buffer_ptr, buffer_length);
       assert_true(!buffer_length || buffer_length == 28);
       // Sequence:
       // - XamSessionCreateHandle
@@ -183,9 +184,9 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       uint32_t session_info_ptr = xe::load_and_swap<uint32_t>(buffer + 0x14);
       uint32_t nonce_ptr = xe::load_and_swap<uint32_t>(buffer + 0x18);
 
-      XELOGD(
-          "XGISessionCreateImpl({:08X}, {:08X}, {}, {}, {:08X}, {:08X}, "
-          "{:08X})",
+      XELOGI(
+          "XSessionCreate: session={:08X}, flags={:08X}, public_slots={}, "
+          "private_slots={}, xuid={:08X}, info={:08X}, nonce={:08X}",
           session_ptr, flags, num_slots_public, num_slots_private, user_xuid,
           session_info_ptr, nonce_ptr);
 
@@ -193,44 +194,150 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       // while offline.
       // 58410889 expects stats session creation failure while offline.
       //
-      // Allow offline session creation, but do not allow Xbox Live featured
-      // session creation.
-
-      if (IsXboxLiveSession(static_cast<SessionFlags>(flags))) {
+      // Allow offline and system link session creation, but do not allow
+      // Xbox Live featured session creation.
+      constexpr uint32_t HOST = 0x01;
+      constexpr uint32_t PEER_NETWORK = 0x20;  // System Link
+      constexpr uint32_t SYSTEMLINK_ALLOWED = HOST | PEER_NETWORK;
+      if (flags & ~SYSTEMLINK_ALLOWED) {
+        XELOGI("XSessionCreate: rejected, flags {:08X} require Xbox Live",
+               flags);
         return 0x80155209;  // X_ONLINE_E_SESSION_NOT_LOGGED_ON
+      }
+
+      // Fill in session info with our local address for system link
+      if (session_info_ptr) {
+        // XSESSION_INFO structure:
+        // 0x00: XNKID sessionID (8 bytes)
+        // 0x08: XNKEY keyExchangeKey (16 bytes)
+        // 0x18: XNADDR hostAddress (36 bytes)
+        //   XNADDR layout:
+        //     0x00: in_addr ina (4 bytes) - IP address
+        //     0x04: in_addr inaOnline (4 bytes) - Online IP
+        //     0x08: uint16_t wPortOnline (2 bytes) - Online port
+        //     0x0A: uint8_t abEnet[6] - MAC address
+        //     0x10: uint8_t abOnline[20] - Online ID
+        auto session_info = memory_->TranslateVirtual(session_info_ptr);
+
+        // Generate a random session ID
+        for (int i = 0; i < 8; i++) {
+          session_info[i] = static_cast<uint8_t>(rand() & 0xFF);
+        }
+
+        // Generate a random key exchange key
+        for (int i = 0; i < 16; i++) {
+          session_info[8 + i] = static_cast<uint8_t>(rand() & 0xFF);
+        }
+
+        // Fill in host address with local network info
+        auto host_addr = session_info + 24;  // Offset to XNADDR
+
+        // Query the local adapter for IP and MAC
+        auto adapter = QueryActiveAdapter();
+        if (adapter.found) {
+          // ina at offset 0 (4 bytes, network byte order)
+          std::memcpy(host_addr, &adapter.ip_addr, 4);
+          // abEnet at offset 10 (0x0A)
+          std::memcpy(host_addr + 10, adapter.mac_addr, 6);
+        }
+
+        XELOGI("XSessionCreate: initialized session info at {:08X}",
+               session_info_ptr);
+      }
+
+      // Fill in nonce if provided
+      if (nonce_ptr) {
+        auto nonce = memory_->TranslateVirtual(nonce_ptr);
+        for (int i = 0; i < 8; i++) {
+          nonce[i] = static_cast<uint8_t>(rand() & 0xFF);
+        }
+        XELOGI("XSessionCreate: initialized nonce at {:08X}", nonce_ptr);
       }
 
       return X_E_SUCCESS;
     }
     case 0x000B0011: {
-      XELOGD("XGISessionDelete({:08X}, {:08X}), implemented in netplay",
-             buffer_ptr, buffer_length);
+      XELOGI("XSessionDelete: buffer={:08X}, len={:08X}", buffer_ptr,
+             buffer_length);
       return X_STATUS_SUCCESS;
     }
     case 0x000B0012: {
       assert_true(buffer_length == 0x14);
       uint32_t session_ptr = xe::load_and_swap<uint32_t>(buffer + 0x0);
-      uint32_t user_count = xe::load_and_swap<uint32_t>(buffer + 0x4);
-      uint32_t unk_0 = xe::load_and_swap<uint32_t>(buffer + 0x8);
-      uint32_t user_index_array = xe::load_and_swap<uint32_t>(buffer + 0xC);
+      uint32_t array_count = xe::load_and_swap<uint32_t>(buffer + 0x4);
+      uint32_t xuid_array_ptr = xe::load_and_swap<uint32_t>(buffer + 0x8);
+      uint32_t indices_array_ptr = xe::load_and_swap<uint32_t>(buffer + 0xC);
       uint32_t private_slots_array = xe::load_and_swap<uint32_t>(buffer + 0x10);
 
-      assert_zero(unk_0);
-      XELOGD("XGISessionJoinLocal({:08X}, {}, {}, {:08X}, {:08X})", session_ptr,
-             user_count, unk_0, user_index_array, private_slots_array);
+      XELOGI(
+          "XSessionJoin: session={:08X}, count={}, xuids={:08X}, "
+          "indices={:08X}, private_slots={:08X}",
+          session_ptr, array_count, xuid_array_ptr, indices_array_ptr,
+          private_slots_array);
+      return X_E_SUCCESS;
+    }
+    case 0x000B0013: {
+      uint32_t session_ptr = xe::load_and_swap<uint32_t>(buffer + 0x0);
+      uint32_t array_count = xe::load_and_swap<uint32_t>(buffer + 0x4);
+      uint32_t xuid_array_ptr = xe::load_and_swap<uint32_t>(buffer + 0x8);
+      uint32_t indices_array_ptr = xe::load_and_swap<uint32_t>(buffer + 0xC);
+      uint32_t private_slots_array = xe::load_and_swap<uint32_t>(buffer + 0x10);
+
+      XELOGI(
+          "XSessionLeave: session={:08X}, count={}, xuids={:08X}, "
+          "indices={:08X}, private_slots={:08X}, buffer_len={:08X}",
+          session_ptr, array_count, xuid_array_ptr, indices_array_ptr,
+          private_slots_array, buffer_length);
       return X_E_SUCCESS;
     }
     case 0x000B0014: {
-      // Gets 584107FB in game.
-      // get high score table?
-      XELOGD("XSessionStart({:08X}), implemented in netplay", buffer_ptr);
+      XELOGI("XSessionStart: buffer={:08X}", buffer_ptr);
       return X_STATUS_SUCCESS;
     }
     case 0x000B0015: {
-      // send high scores?
-      XELOGD("XSessionEnd({:08X}, {:08X}), implemented in netplay", buffer_ptr,
+      XELOGI("XSessionEnd: buffer={:08X}, len={:08X}", buffer_ptr,
              buffer_length);
       return X_STATUS_SUCCESS;
+    }
+    case 0x000B0016: {
+      XELOGI("XSessionSearch: buffer={:08X}, len={:08X}", buffer_ptr,
+             buffer_length);
+      return X_E_SUCCESS;
+    }
+    case 0x000B0017: {
+      XELOGI("XSessionModify: buffer={:08X}, len={:08X}", buffer_ptr,
+             buffer_length);
+      return X_E_SUCCESS;
+    }
+    case 0x000B0018: {
+      XELOGI("XSessionMigrateHost: buffer={:08X}, len={:08X}", buffer_ptr,
+             buffer_length);
+      return X_E_SUCCESS;
+    }
+    case 0x000B0019: {
+      XELOGI("XSessionLeaveLocal: buffer={:08X}, len={:08X}", buffer_ptr,
+             buffer_length);
+      return X_E_SUCCESS;
+    }
+    case 0x000B001A: {
+      XELOGI("XSessionLeaveRemote: buffer={:08X}, len={:08X}", buffer_ptr,
+             buffer_length);
+      return X_E_SUCCESS;
+    }
+    case 0x000B001B: {
+      XELOGI("XSessionArbitrationRegister: buffer={:08X}, len={:08X}",
+             buffer_ptr, buffer_length);
+      return X_E_SUCCESS;
+    }
+    case 0x000B001C: {
+      XELOGI("XSessionGetDetails: buffer={:08X}, len={:08X}", buffer_ptr,
+             buffer_length);
+      return X_E_SUCCESS;
+    }
+    case 0x000B001D: {
+      XELOGI("XSessionFlushStats: buffer={:08X}, len={:08X}", buffer_ptr,
+             buffer_length);
+      return X_E_SUCCESS;
     }
     case 0x000B0021: {
       XELOGD("XUserReadStats");

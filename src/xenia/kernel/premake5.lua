@@ -30,6 +30,11 @@ project("xenia-kernel")
     "xenia-hid",
     "xenia-vfs",
   })
+  filter("platforms:Windows")
+    links({
+      "iphlpapi",
+    })
+  filter({})
   defines({
     "X86_FEATURES",
     "X86_HAVE_XSAVE_INTRIN",
