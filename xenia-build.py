@@ -1423,7 +1423,7 @@ class BuildShadersCommand(Command):
             """,
             *args, **kwargs)
         self.parser.add_argument(
-            "--target", action="append", choices=["dxbc", "spirv"], default=[],
+            "--target", action="append", choices=["dxbc", "dxil", "spirv"], default=[],
             help="Builds only the given target(s).")
 
     def execute(self, args, pass_args, cwd):
@@ -1434,7 +1434,7 @@ def build_shaders(targets=None):
     """Builds shader bytecode. Called by BuildShadersCommand and BuildCommand.
 
     Args:
-        targets: List of targets ("dxbc", "spirv"), or None/empty for all.
+        targets: List of targets ("dxbc", "dxil", "spirv"), or None/empty for all.
 
     Returns:
         0 on success, non-zero on error.
@@ -1442,7 +1442,7 @@ def build_shaders(targets=None):
     # Check if shaders need rebuilding by comparing source vs generated timestamps
     gpu_shaders = "src/xenia/gpu/shaders"
     ui_shaders = "src/xenia/ui/shaders"
-    # DXBC directories only on Windows, SPIR-V everywhere
+    # DXBC/DXIL directories only on Windows, SPIR-V everywhere
     bytecode_dirs = [
         "src/xenia/gpu/shaders/bytecode/vulkan_spirv",
         "src/xenia/ui/shaders/bytecode/vulkan_spirv",
@@ -1451,15 +1451,22 @@ def build_shaders(targets=None):
         bytecode_dirs.extend([
             "src/xenia/gpu/shaders/bytecode/d3d12_5_1",
             "src/xenia/ui/shaders/bytecode/d3d12_5_1",
+            "src/xenia/gpu/shaders/bytecode/d3d12_6_6",
+            "src/xenia/ui/shaders/bytecode/d3d12_6_6",
         ])
 
     newest_source = max(get_dir_newest_mtime(gpu_shaders),
                        get_dir_newest_mtime(ui_shaders))
-    oldest_generated = min((get_dir_oldest_mtime(d) for d in bytecode_dirs),
-                          default=0)
+    # Check each directory - if any doesn't exist or is empty, force rebuild
+    oldest_generated = float('inf')
+    for d in bytecode_dirs:
+        if not os.path.isdir(d) or not os.listdir(d):
+            oldest_generated = 0  # Force rebuild
+            break
+        oldest_generated = min(oldest_generated, get_dir_oldest_mtime(d))
 
     # If oldest_generated is inf, bytecode doesn't exist - need to generate
-    if oldest_generated != float('inf') and newest_source <= oldest_generated:
+    if oldest_generated != float('inf') and oldest_generated != 0 and newest_source <= oldest_generated:
         print("Shaders are up-to-date, skipping generation.")
         return 0
 
@@ -1573,6 +1580,75 @@ def build_shaders(targets=None):
                 ])
             if subprocess.call(compiler_args, stdout=subprocess.DEVNULL) != 0:
                 print(f"ERROR: failed to compile DXBC shader: {src_path}")
+                return 1
+
+    # Direct3D DXIL SM 6.6 (Windows only).
+    if (all_targets or "dxil" in targets) and sys.platform == "win32":
+        print("Building Direct3D 12 Shader Model 6.6 DXIL shaders...")
+
+        # Get the DXC path.
+        dxc = os.environ.get("DXC_PATH")
+        if not dxc:
+            # Fall back to searching Windows Kits
+            dxc_paths = glob(os.path.join(os.environ.get("ProgramFiles(x86)", ""),
+                       "Windows Kits", "10", "bin", "*", "x64", "dxc.exe"))
+            if not dxc_paths:
+                # Also try Vulkan SDK which includes DXC
+                vulkan_sdk = os.environ.get("VULKAN_SDK")
+                if vulkan_sdk:
+                    vulkan_dxc = os.path.join(vulkan_sdk, "Bin", "dxc.exe")
+                    if os.path.exists(vulkan_dxc):
+                        dxc = vulkan_dxc
+                if not dxc:
+                    print("ERROR: could not find dxc! Set DXC_PATH environment variable or install Windows SDK.")
+                    return 1
+            else:
+                dxc = dxc_paths[-1]  # Highest version is last
+        else:
+            print(f"Using DXC from environment variable: {dxc}")
+
+        # Build DXIL.
+        dxil_stages = ["vs", "hs", "ds", "gs", "ps", "cs"]
+        for src_path in src_paths:
+            src_name = os.path.basename(src_path)
+            if ((not src_name.endswith(".hlsl") and
+                 not src_name.endswith(".xesl")) or
+                len(src_name) <= 8 or src_name[-8] != "."):
+                continue
+            dxil_identifier = src_name[:-5].replace(".", "_")
+            dxil_stage = dxil_identifier[-2:]
+            if dxil_stage not in dxil_stages:
+                continue
+            # Skip FidelityFX shaders - they use vector ternary operators that DXC doesn't support
+            if "_ffx_" in src_name.lower():
+                print(f"- {src_path} > d3d12_6_6 (skipped: FFX shader)")
+                continue
+            print(f"- {src_path} > d3d12_6_6")
+            dxil_dir_path = os.path.join(os.path.dirname(src_path),
+                                         "bytecode/d3d12_6_6")
+            os.makedirs(dxil_dir_path, exist_ok=True)
+            dxil_file_path_base = os.path.join(dxil_dir_path, dxil_identifier)
+
+            src_dir = os.path.dirname(src_path)
+            # DXC command line for SM 6.6
+            compiler_args = [
+                dxc,
+                "-T", f"{dxil_stage}_6_6",
+                "-HV", "2021",
+                "-D", "SHADING_LANGUAGE_HLSL_XE=1",
+                "-D", "XE_DXIL=1",
+                "-I", src_dir,
+                "-Fh", f"{dxil_file_path_base}.h",
+                "-Vn", dxil_identifier,
+                "-O3",
+                "-Qstrip_reflect",
+                "-Qstrip_debug",
+                "-all_resources_bound",
+                "-nologo",
+                src_path,
+            ]
+            if subprocess.call(compiler_args, stdout=subprocess.DEVNULL) != 0:
+                print(f"ERROR: failed to compile DXIL shader: {src_path}")
                 return 1
 
     # Vulkan SPIR-V.
@@ -2064,8 +2140,10 @@ def clean_shader_bytecode():
     """Removes generated shader bytecode files."""
     bytecode_dirs = [
         "src/xenia/gpu/shaders/bytecode/d3d12_5_1",
+        "src/xenia/gpu/shaders/bytecode/d3d12_6_6",
         "src/xenia/gpu/shaders/bytecode/vulkan_spirv",
         "src/xenia/ui/shaders/bytecode/d3d12_5_1",
+        "src/xenia/ui/shaders/bytecode/d3d12_6_6",
         "src/xenia/ui/shaders/bytecode/vulkan_spirv",
     ]
     for bytecode_dir in bytecode_dirs:

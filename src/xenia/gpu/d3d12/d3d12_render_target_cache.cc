@@ -43,6 +43,8 @@ namespace gpu {
 namespace d3d12 {
 
 // Generated with `xb buildshaders`.
+// Internal shaders always use DXBC (SM 5.1) because the transfer pixel shaders
+// are dynamically generated as DXBC and can't be mixed with DXIL vertex shaders.
 namespace shaders {
 #include "xenia/gpu/shaders/bytecode/d3d12_5_1/clear_uint2_ps.h"
 #include "xenia/gpu/shaders/bytecode/d3d12_5_1/fullscreen_cw_vs.h"
@@ -74,9 +76,8 @@ namespace shaders {
 #include "xenia/gpu/shaders/bytecode/d3d12_5_1/resolve_full_8bpp_scaled_cs.h"
 }  // namespace shaders
 
-constexpr D3D12RenderTargetCache::ResolveCopyShaderCode
-    D3D12RenderTargetCache::kResolveCopyShaders[size_t(
-        draw_util::ResolveCopyShaderIndex::kCount)] = {
+static constexpr D3D12RenderTargetCache::ResolveCopyShaderCode
+    kResolveCopyShaders[size_t(draw_util::ResolveCopyShaderIndex::kCount)] = {
         {shaders::resolve_fast_32bpp_1x2xmsaa_cs,
          sizeof(shaders::resolve_fast_32bpp_1x2xmsaa_cs),
          shaders::resolve_fast_32bpp_1x2xmsaa_scaled_cs,
@@ -943,7 +944,8 @@ bool D3D12RenderTargetCache::Initialize() {
         shaders::fullscreen_cw_vs;
     uint32_rtv_clear_pipeline_desc.VS.BytecodeLength =
         sizeof(shaders::fullscreen_cw_vs);
-    uint32_rtv_clear_pipeline_desc.PS.pShaderBytecode = shaders::clear_uint2_ps;
+    uint32_rtv_clear_pipeline_desc.PS.pShaderBytecode =
+        shaders::clear_uint2_ps;
     uint32_rtv_clear_pipeline_desc.PS.BytecodeLength =
         sizeof(shaders::clear_uint2_ps);
     uint32_rtv_clear_pipeline_desc.BlendState.RenderTarget[0]
@@ -1056,12 +1058,15 @@ bool D3D12RenderTargetCache::Initialize() {
     }
 
     // Create the resolve EDRAM buffer clearing pipelines.
-    resolve_rov_clear_32bpp_pipeline_ = ui::d3d12::util::CreateComputePipeline(
-        device,
-        draw_resolution_scaled ? shaders::resolve_clear_32bpp_scaled_cs
-                               : shaders::resolve_clear_32bpp_cs,
+    const void* resolve_clear_32bpp_cs =
+        draw_resolution_scaled
+            ? static_cast<const void*>(shaders::resolve_clear_32bpp_scaled_cs)
+            : static_cast<const void*>(shaders::resolve_clear_32bpp_cs);
+    size_t resolve_clear_32bpp_cs_size =
         draw_resolution_scaled ? sizeof(shaders::resolve_clear_32bpp_scaled_cs)
-                               : sizeof(shaders::resolve_clear_32bpp_cs),
+                               : sizeof(shaders::resolve_clear_32bpp_cs);
+    resolve_rov_clear_32bpp_pipeline_ = ui::d3d12::util::CreateComputePipeline(
+        device, resolve_clear_32bpp_cs, resolve_clear_32bpp_cs_size,
         resolve_rov_clear_root_signature_);
     if (resolve_rov_clear_32bpp_pipeline_ == nullptr) {
       XELOGE(
@@ -1071,12 +1076,15 @@ bool D3D12RenderTargetCache::Initialize() {
       return false;
     }
     resolve_rov_clear_32bpp_pipeline_->SetName(L"Resolve Clear 32bpp");
-    resolve_rov_clear_64bpp_pipeline_ = ui::d3d12::util::CreateComputePipeline(
-        device,
-        draw_resolution_scaled ? shaders::resolve_clear_64bpp_scaled_cs
-                               : shaders::resolve_clear_64bpp_cs,
+    const void* resolve_clear_64bpp_cs =
+        draw_resolution_scaled
+            ? static_cast<const void*>(shaders::resolve_clear_64bpp_scaled_cs)
+            : static_cast<const void*>(shaders::resolve_clear_64bpp_cs);
+    size_t resolve_clear_64bpp_cs_size =
         draw_resolution_scaled ? sizeof(shaders::resolve_clear_64bpp_scaled_cs)
-                               : sizeof(shaders::resolve_clear_64bpp_cs),
+                               : sizeof(shaders::resolve_clear_64bpp_cs);
+    resolve_rov_clear_64bpp_pipeline_ = ui::d3d12::util::CreateComputePipeline(
+        device, resolve_clear_64bpp_cs, resolve_clear_64bpp_cs_size,
         resolve_rov_clear_root_signature_);
     if (resolve_rov_clear_64bpp_pipeline_ == nullptr) {
       XELOGE(

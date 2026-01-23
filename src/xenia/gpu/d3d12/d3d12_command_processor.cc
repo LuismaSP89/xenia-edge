@@ -37,6 +37,7 @@ DEFINE_bool(d3d12_bindless, true,
             "D3D12");
 
 DECLARE_bool(clear_memory_page_state);
+DECLARE_bool(d3d12_dxil);
 DECLARE_bool(gpu_debug_markers);
 DECLARE_bool(submit_on_primary_buffer_end);
 DECLARE_bool(readback_memexport_fast);
@@ -1064,7 +1065,14 @@ bool D3D12CommandProcessor::SetupContext() {
     root_signature_bindless_desc.pParameters = root_parameters_bindless;
     root_signature_bindless_desc.NumStaticSamplers = 0;
     root_signature_bindless_desc.pStaticSamplers = nullptr;
-    root_signature_bindless_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+    // For SM 6.6 DXIL with ResourceDescriptorHeap/SamplerDescriptorHeap.
+    if (cvars::d3d12_dxil) {
+      root_signature_bindless_desc.Flags =
+          D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED |
+          D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+    } else {
+      root_signature_bindless_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+    }
     // Fetch constants.
     {
       auto& parameter =
@@ -2983,6 +2991,20 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       primitive_processing_result.line_loop_closing_index,
       primitive_processing_result.host_shader_index_endian, viewport_info,
       used_texture_mask, normalized_depth_control, normalized_color_mask);
+
+  // Debug logging for HLSL shader path investigation
+  static uint32_t debug_log_counter = 0;
+  if (cvars::d3d12_dxil && debug_log_counter < 10) {
+    XELOGI(
+        "HLSL Debug Draw #{}: flags={:08X} ndc_scale=({:.4f},{:.4f},{:.4f}) "
+        "ndc_offset=({:.4f},{:.4f},{:.4f}) VS_mod={:016X} PS_mod={:016X}",
+        debug_log_counter, system_constants_.flags,
+        system_constants_.ndc_scale[0], system_constants_.ndc_scale[1],
+        system_constants_.ndc_scale[2], system_constants_.ndc_offset[0],
+        system_constants_.ndc_offset[1], system_constants_.ndc_offset[2],
+        vertex_shader_modification.value, pixel_shader_modification.value);
+    ++debug_log_counter;
+  }
 
   // Update constant buffers, descriptors and root parameters.
   if (!UpdateBindings(vertex_shader, pixel_shader, root_signature,
@@ -5340,6 +5362,7 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
         }
         if (sampler_count_pixel &&
             !cbuffer_binding_descriptor_indices_pixel_.up_to_date) {
+          XELOGI("Populating sampler heap indices for {} pixel samplers", sampler_count_pixel);
           current_sampler_bindless_indices_pixel_.resize(
               std::max(current_sampler_bindless_indices_pixel_.size(),
                        size_t(sampler_count_pixel)));
@@ -5351,12 +5374,14 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
                 sampler_parameters.value);
             if (it != texture_cache_bindless_sampler_map_.end()) {
               sampler_index = it->second;
+              XELOGI("  Sampler[{}]: cache hit, index={}", j, sampler_index);
             } else {
               if (sampler_bindless_heap_allocated_ >= kSamplerHeapSize) {
                 samplers_overflowed = true;
                 break;
               }
               sampler_index = sampler_bindless_heap_allocated_++;
+              XELOGI("  Sampler[{}]: new allocation, index={}", j, sampler_index);
               texture_cache_->WriteSampler(
                   sampler_parameters,
                   provider.OffsetSamplerDescriptor(
@@ -5366,6 +5391,8 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
             }
             current_sampler_bindless_indices_pixel_[j] = sampler_index;
           }
+        } else if (sampler_count_pixel) {
+          XELOGI("Skipping sampler population: up_to_date={}", cbuffer_binding_descriptor_indices_pixel_.up_to_date);
         }
         if (!samplers_overflowed) {
           break;
@@ -5424,11 +5451,13 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
       if (!descriptor_indices) {
         return false;
       }
+      XELOGI("Writing {} textures to descriptor_indices", texture_count_pixel);
       for (size_t i = 0; i < texture_count_pixel; ++i) {
         const D3D12Shader::TextureBinding& texture = (*textures_pixel)[i];
-        descriptor_indices[texture.bindless_descriptor_index] =
-            texture_cache_->GetActiveTextureBindlessSRVIndex(texture) -
+        uint32_t tex_srv_idx = texture_cache_->GetActiveTextureBindlessSRVIndex(texture) -
             uint32_t(SystemBindlessView::kUnboundedSRVsStart);
+        XELOGI("  Texture[{}]: bindless_idx={}, srv_idx={}", i, texture.bindless_descriptor_index, tex_srv_idx);
+        descriptor_indices[texture.bindless_descriptor_index] = tex_srv_idx;
       }
       current_texture_layout_uid_pixel_ = texture_layout_uid_pixel;
       if (texture_count_pixel) {
@@ -5440,9 +5469,13 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
             texture_count_pixel);
       }
       // Current samplers have already been updated.
+      XELOGI("Writing {} samplers to descriptor_indices (tex_count={}, smp_count={})",
+             sampler_count_pixel, texture_count_pixel, sampler_count_pixel);
       for (size_t i = 0; i < sampler_count_pixel; ++i) {
-        descriptor_indices[(*samplers_pixel)[i].bindless_descriptor_index] =
-            current_sampler_bindless_indices_pixel_[i];
+        uint32_t smp_bindless_idx = (*samplers_pixel)[i].bindless_descriptor_index;
+        uint32_t smp_heap_idx = current_sampler_bindless_indices_pixel_[i];
+        XELOGI("  Sampler[{}]: bindless_idx={}, heap_idx={}", i, smp_bindless_idx, smp_heap_idx);
+        descriptor_indices[smp_bindless_idx] = smp_heap_idx;
       }
       cbuffer_binding_descriptor_indices_pixel_.up_to_date = true;
       current_graphics_root_up_to_date_ &=
