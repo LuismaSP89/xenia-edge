@@ -122,6 +122,7 @@ class UserProfile {
     return account_info_.IsParentalControlled();
   };
   bool IsLiveEnabled() const { return account_info_.IsLiveEnabled(); }
+  void SetLiveEnabled(bool is_live) { account_info_.ToggleLiveFlag(is_live); }
 
   std::span<const uint8_t> GetProfileIcon(XTileType icon_type) {
     // First check if the requested type exists
