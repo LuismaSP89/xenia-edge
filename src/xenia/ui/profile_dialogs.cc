@@ -282,13 +282,19 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
           if (account_data) {
             bool is_live = account_data->IsLiveEnabled();
             if (ImGui::MenuItem("Live Enabled", nullptr, &is_live)) {
-              auto account = *account_data;
-              account.ToggleLiveFlag(is_live);
-              profile_manager->UpdateAccount(xuid, &account);
+              if (is_live) {
+                // Enable live + generate online XUID through backend
+                profile_manager->ConvertToXboxLiveEnabledProfile(xuid);
+              } else {
+                // Disable live
+                auto account = *account_data;
+                account.ToggleLiveFlag(false);
+                profile_manager->UpdateAccount(xuid, &account);
 
-              auto* profile = profile_manager->GetProfile(xuid);
-              if (profile) {
-                profile->SetLiveEnabled(is_live);
+                auto* profile = profile_manager->GetProfile(xuid);
+                if (profile) {
+                  profile->SetLiveEnabled(false);
+                }
               }
 
               emulator_window_->emulator()

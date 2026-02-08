@@ -133,6 +133,13 @@ struct X_XAMACCOUNTINFO {
 };
 static_assert_size(X_XAMACCOUNTINFO, 0x17C);
 
+#define X_USER_INFO_FLAG_LIVE_ENABLED 0x00000001
+#define X_USER_INFO_FLAG_GUEST 0x00000002
+
+#define X_USER_XUID_OFFLINE 0x00000001
+#define X_USER_XUID_ONLINE 0x00000002
+#define X_USER_XUID_GUEST 0x00000004
+
 #define X_USER_GET_SIGNIN_INFO_ONLINE_XUID_ONLY 0x00000001
 #define X_USER_GET_SIGNIN_INFO_OFFLINE_XUID_ONLY 0x00000002
 
@@ -360,6 +367,8 @@ struct XMP_USER_PLAYLIST_INFO {
 static_assert_size(XMP_USER_PLAYLIST_INFO, 0x334);
 
 constexpr uint8_t kStatsMaxAmount = 64;
+constexpr uint32_t X_USER_STATS_ATTRIBUTES_IN_SPEC = 64;
+constexpr uint32_t X_STATS_MAX_ROW_COUNT = 100;
 
 struct X_STATS_DETAILS {
   xe::be<uint32_t> id;
@@ -367,6 +376,35 @@ struct X_STATS_DETAILS {
   xe::be<uint16_t> stats[kStatsMaxAmount];
 };
 static_assert_size(X_STATS_DETAILS, 8 + kStatsMaxAmount * 2);
+
+// Stats enumerator structures (from netplay)
+struct X_USER_STATS_VIEW {
+  xe::be<uint32_t> view_id;
+  xe::be<uint32_t> total_view_rows;
+  xe::be<uint32_t> num_rows;
+  xe::be<uint32_t> rows_ptr;  // X_USER_STATS_ROW*
+};
+static_assert_size(X_USER_STATS_VIEW, 0x10);
+
+struct X_USER_STATS_READ_RESULTS {
+  xe::be<uint32_t> num_views;
+  xe::be<uint32_t> views_ptr;  // X_USER_STATS_VIEW*
+};
+static_assert_size(X_USER_STATS_READ_RESULTS, 0x8);
+
+struct X_USER_STATS_SPEC {
+  xe::be<uint32_t> view_id;
+  xe::be<uint32_t> num_column_ids;
+  xe::be<uint16_t> column_ids[X_USER_STATS_ATTRIBUTES_IN_SPEC];
+};
+static_assert_size(X_USER_STATS_SPEC, 8 + X_USER_STATS_ATTRIBUTES_IN_SPEC * 2);
+
+enum class X_STATS_ENUMERATOR_TYPE : uint32_t {
+  XUID = 0,
+  RANK = 1,
+  RANK_PER_SPEC = 2,
+  BY_RATING = 3,
+};
 
 }  // namespace xam
 }  // namespace kernel

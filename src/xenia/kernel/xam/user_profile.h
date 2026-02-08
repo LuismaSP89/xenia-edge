@@ -125,6 +125,11 @@ class UserProfile {
   };
   bool IsLiveEnabled() const { return account_info_.IsLiveEnabled(); }
   void SetLiveEnabled(bool is_live) { account_info_.ToggleLiveFlag(is_live); }
+  uint64_t GetOnlineXUID() const { return account_info_.GetOnlineXUID(); }
+  uint64_t GetLogonXUID() const {
+    uint64_t online = GetOnlineXUID();
+    return IsLiveEnabled() && online ? online : xuid();
+  }
 
   std::span<const uint8_t> GetProfileIcon(XTileType icon_type) {
     // First check if the requested type exists

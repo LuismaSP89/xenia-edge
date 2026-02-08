@@ -13,9 +13,15 @@
 // Asio must be included before Windows headers to avoid macro conflicts
 #include <asio.hpp>
 
+#include <atomic>
 #include <cstring>
+#include <mutex>
 #include <optional>
 #include <queue>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "xenia/base/byte_order.h"
 #include "xenia/kernel/xobject.h"
@@ -111,6 +117,25 @@ struct N_XSOCKADDR_IN {
   char x_sin_zero[8];
 };
 
+// WSA overlapped structure used by async socket operations.
+// Field semantics (matching Windows OVERLAPPED convention):
+//   internal      = I/O status (STATUS_PENDING=0x103 while in progress,
+//                   0=success, or NTSTATUS error code)
+//   internal_high = bytes transferred (on completion)
+//   event_handle  = Xbox event handle to signal on completion
+struct XWSAOVERLAPPED {
+  xe::be<uint32_t> internal;
+  xe::be<uint32_t> internal_high;
+  union {
+    struct {
+      xe::be<uint32_t> low;
+      xe::be<uint32_t> high;
+    } offset;
+    xe::be<uint32_t> pointer;
+  };
+  xe::be<uint32_t> event_handle;
+};
+
 class XSocket : public XObject {
  public:
   static const XObject::Type kObjectType = XObject::Type::Socket;
@@ -139,10 +164,13 @@ class XSocket : public XObject {
   XSocket(KernelState* kernel_state);
   ~XSocket();
 
-  // Returns the native socket handle for use with select() etc.
-  // Returns -1 if socket is not initialized.
-  uint64_t native_handle();
+  // Force-stop the shared io_context thread, cancelling all pending async
+  // operations across all sockets. Call during emulator shutdown to break
+  // ref-count cycles between async handlers and XSocket instances.
+  static void ShutdownIOThread();
+
   uint16_t bound_port() const { return bound_port_; }
+  std::string local_endpoint_string() const;
 
   X_STATUS Initialize(AddressFamily af, Type type, Protocol proto);
   X_STATUS Close();
@@ -169,6 +197,23 @@ class XSocket : public XObject {
   int SendTo(uint8_t* buf, uint32_t buf_len, uint32_t flags, N_XSOCKADDR_IN* to,
              uint32_t to_len);
 
+  // Async overlapped operations
+  // Note: WSARecvFrom takes XSOCKADDR_IN* (guest big-endian format) for the
+  // from address. For sync (no overlapped), conversion from N_XSOCKADDR_IN is
+  // handled internally. For async, the handler writes directly to guest memory.
+  int WSARecvFrom(
+      uint8_t* buf, uint32_t buf_len, uint32_t flags, XSOCKADDR_IN* from,
+      XWSAOVERLAPPED* overlapped,
+      std::vector<std::pair<uint8_t*, uint32_t>> scatter_buffers = {});
+  int WSASendTo(const uint8_t* buf, uint32_t buf_len, uint32_t flags,
+                N_XSOCKADDR_IN* to, uint32_t to_len,
+                XWSAOVERLAPPED* overlapped);
+  void WSACancelOverlappedIO();
+  bool IsOverlappedPending(XWSAOVERLAPPED* overlapped) const;
+
+  size_t GetBytesAvailable() const;
+  bool IsWritable() const;
+
   uint32_t XWSAGetLastError() const;
 
   struct packet {
@@ -185,6 +230,10 @@ class XSocket : public XObject {
                    size_t len);
 
  private:
+  // Returns the native socket handle for internal use (e.g. SO_SNDTIMEO
+  // fallback). Returns -1 if socket is not initialized.
+  uint64_t native_handle();
+
   // Private constructor for accepted sockets
   XSocket(KernelState* kernel_state, asio::ip::tcp::socket socket);
 
@@ -203,6 +252,11 @@ class XSocket : public XObject {
   bool bound_ = false;  // Explicitly bound to an IP address?
   uint16_t bound_port_ = 0;
 
+  // If Bind() remapped a privileged port (e.g. 1000 → 11000), this holds the
+  // remapped port (11000). 0 if no remap occurred. Used to clean up the global
+  // remapped_ports map on Close().
+  uint16_t remapped_port_ = 0;
+
   bool broadcast_socket_ = false;
 
   // Last error code for this socket
@@ -211,6 +265,17 @@ class XSocket : public XObject {
   std::unique_ptr<xe::threading::Event> event_;
   std::mutex incoming_packet_mutex_;
   std::queue<uint8_t*> incoming_packets_;
+
+  // Async overlapped operation tracking
+  mutable std::mutex pending_ops_mutex_;
+  std::set<XWSAOVERLAPPED*> pending_ops_;
+
+  // Set to true during Close() to tell async handlers to skip guest memory
+  // writes and event signaling during teardown.
+  std::atomic<bool> closing_{false};
+
+  void CompleteOverlapped(XWSAOVERLAPPED* overlapped, uint32_t error_status,
+                          uint32_t bytes_transferred);
 };
 
 }  // namespace kernel

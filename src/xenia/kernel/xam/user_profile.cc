@@ -10,6 +10,7 @@
 #include "xenia/kernel/xam/user_profile.h"
 
 #include "third_party/fmt/include/fmt/format.h"
+#include "xenia/base/logging.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xdbf/gpd_info.h"
@@ -24,6 +25,7 @@ UserProfile::UserProfile(const uint64_t xuid,
   // 58410A1F checks the user XUID against a mask of 0x00C0000000000000 (3<<54),
   // if non-zero, it prevents the user from playing the game.
   // "You do not have permissions to perform this operation."
+
   LoadProfileGpds();
 
   // Load default gamer tiles

@@ -25,6 +25,7 @@
 #include "xenia/kernel/xmodule.h"
 #include "xenia/kernel/xnotifylistener.h"
 #include "xenia/kernel/xobject.h"
+#include "xenia/kernel/xsocket.h"
 #include "xenia/kernel/xthread.h"
 #include "xenia/ui/imgui_host_notification.h"
 
@@ -93,6 +94,24 @@ KernelState::~KernelState() {
   executable_module_.reset();
   user_modules_.clear();
   kernel_modules_.clear();
+
+  // Graceful socket shutdown (per ASIO recommended pattern):
+  // 1. Close all sockets — cancels pending async ops, queuing
+  //    operation_aborted handlers on the io_context.
+  // 2. Release the work guard — allows io_context::run() to return
+  //    after processing the cancelled handlers.
+  // 3. run() processes those handlers on the io thread, releasing
+  //    the object_ref<XSocket> captures they hold.
+  // 4. Join the io thread.
+  // This must happen before object_table_.Reset() — otherwise the async
+  // handler refs keep XSocket instances alive and the io thread never exits.
+  {
+    auto sockets = object_table_.GetObjectsByType<XSocket>();
+    for (auto& socket : sockets) {
+      socket->Close();
+    }
+  }
+  XSocket::ShutdownIOThread();
 
   // Delete all objects.
   object_table_.Reset();
@@ -968,7 +987,20 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
     // X_ONLINE_S_LOGON_DISCONNECTED
     listener->EnqueueNotification(kXNotificationLiveConnectionChanged,
                                   0x001510F1L);
-    listener->EnqueueNotification(kXNotificationLiveLinkStateChanged, 0);
+    // Send 1 = ethernet link connected (consistent with netplay)
+    listener->EnqueueNotification(kXNotificationLiveLinkStateChanged, 1);
+  }
+
+  // 4E4D07ED, 58410869. Fixes creating Xbox Live sessions.
+  // 4D5307D4 expects multiple notifications to access Xbox Live menus.
+  // Sign in related (consistent with netplay)
+  if (listener->mask() == (kXNotifySystem | kXNotifyLive)) {
+    listener->EnqueueNotification(kXNotificationSystemSignInChanged, 1);
+  }
+
+  if (!has_notified_xparty_ && listener->mask() & kXNotifyParty) {
+    has_notified_xparty_ = true;
+    listener->EnqueueNotification(kXNotificationPartyMembersChanged, 0);
   }
 }
 

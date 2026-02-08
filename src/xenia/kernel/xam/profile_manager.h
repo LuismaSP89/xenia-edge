@@ -11,6 +11,7 @@
 #define XENIA_KERNEL_XAM_PROFILE_MANAGER_H_
 
 #include <bitset>
+#include <functional>
 #include <random>
 #include <string>
 #include <vector>
@@ -59,6 +60,13 @@ const static inline uint64_t GenerateXuid() {
   return ((uint64_t)0xE03 << 52) + (gen() % (1 << 31));
 }
 
+const static inline uint64_t GenerateXuidOnline() {
+  std::random_device rd;
+  std::mt19937 gen(rd());
+
+  return (0x9ULL << 48) + (gen() % (1ULL << 31));
+}
+
 class ProfileManager {
  public:
   static bool DecryptAccountFile(const uint8_t* data, X_XAMACCOUNTINFO* output,
@@ -101,6 +109,7 @@ class ProfileManager {
   UserProfile* GetProfile(const uint64_t xuid) const;
   UserProfile* GetProfile(const uint8_t user_index) const;
   uint8_t GetUserIndexAssignedToProfile(const uint64_t xuid) const;
+  uint8_t GetUserIndexAssignedToLiveProfile(const uint64_t xuid_online) const;
 
   const std::map<uint64_t, X_XAMACCOUNTINFO>* GetAccounts() {
     return &accounts_;
@@ -118,6 +127,8 @@ class ProfileManager {
 
   bool UpdateAccount(const uint64_t xuid, const X_XAMACCOUNTINFO* account);
 
+  bool ConvertToXboxLiveEnabledProfile(const uint64_t xuid);
+
   // Clears the title path from all profiles' dashboard GPDs
   bool ClearTitlePath(uint32_t title_id);
 
@@ -131,6 +142,9 @@ class ProfileManager {
   void UpdateConfig(const uint64_t xuid, const uint8_t slot);
   bool CreateAccount(const uint64_t xuid, const std::string gamertag);
   bool CreateAccount(const uint64_t xuid, const X_XAMACCOUNTINFO* account);
+
+  bool ModifyAccount(const uint64_t xuid, X_XAMACCOUNTINFO* account,
+                     std::function<bool(X_XAMACCOUNTINFO*)> action);
 
   std::filesystem::path GetProfilePath(const uint64_t xuid) const;
   std::filesystem::path GetProfilePath(const std::string xuid) const;

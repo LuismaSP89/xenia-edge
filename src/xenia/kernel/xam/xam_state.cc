@@ -54,6 +54,17 @@ bool XamState::IsUserSignedIn(uint64_t xuid) const {
   return GetUserProfile(xuid) != nullptr;
 }
 
+uint8_t XamState::GetUserIndexAssignedToProfileFromXUID(uint64_t xuid) const {
+  const uint8_t user_index =
+      profile_manager_->GetUserIndexAssignedToProfile(xuid);
+
+  if (user_index != XUserIndexAny) {
+    return user_index;
+  }
+
+  return profile_manager_->GetUserIndexAssignedToLiveProfile(xuid);
+}
+
 void XamState::LoadSpaInfo(const SpaInfo* info,
                            const std::filesystem::path& title_path) {
   if (!info) {

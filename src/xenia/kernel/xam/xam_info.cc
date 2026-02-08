@@ -233,12 +233,11 @@ dword_result_t XamGetCachedTitleName_entry(dword_t title_id,
 DECLARE_XAM_EXPORT1(XamGetCachedTitleName, kNone, kImplemented);
 
 dword_result_t XamGetSystemVersion_entry() {
-  // eh, just picking one. If we go too low we may break new games, but
-  // this value seems to be used for conditionally loading symbols and if
-  // we pretend to be old we have less to worry with implementing.
+  // Return latest kernel version so games use extended networking
+  // (XNetStartupEx/WSAStartupEx). Matches netplay behavior.
   // 0x200A3200
   // 0x20096B00
-  return 0;
+  return 0x20449700;
 }
 DECLARE_XAM_EXPORT1(XamGetSystemVersion, kNone, kStub);
 

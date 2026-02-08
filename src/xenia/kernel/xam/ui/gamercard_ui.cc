@@ -616,8 +616,9 @@ void GamercardUI::OnDraw(ImGuiIO& io) {
 }
 
 void GamercardUI::SaveAccountData() {
-  const auto account_original =
-      *kernel_state()->xam_state()->profile_manager()->GetAccount(xuid_);
+  auto* profile_manager = kernel_state()->xam_state()->profile_manager();
+
+  const auto account_original = *profile_manager->GetAccount(xuid_);
   auto account = account_original;
 
   account.SetCountry(gamercardValues_.country);
@@ -632,15 +633,19 @@ void GamercardUI::SaveAccountData() {
 
   if (std::memcmp(&account, &account_original, sizeof(X_XAMACCOUNTINFO)) != 0) {
     if (!is_signed_in_) {
-      kernel_state()->xam_state()->profile_manager()->MountProfile(xuid_);
+      profile_manager->MountProfile(xuid_);
     }
 
-    kernel_state()->xam_state()->profile_manager()->UpdateAccount(xuid_,
-                                                                  &account);
+    profile_manager->UpdateAccount(xuid_, &account);
 
     if (!is_signed_in_) {
-      kernel_state()->xam_state()->profile_manager()->DismountProfile(xuid_);
+      profile_manager->DismountProfile(xuid_);
     }
+  }
+
+  // If live was just enabled, generate online XUID through backend
+  if (gamercardValues_.is_live_enabled && !account_original.IsLiveEnabled()) {
+    profile_manager->ConvertToXboxLiveEnabledProfile(xuid_);
   }
 }
 

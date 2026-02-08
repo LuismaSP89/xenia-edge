@@ -95,6 +95,8 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
                                       uint32_t buffer_length) {
   // NOTE: buffer_length may be zero or valid.
   auto buffer = memory_->TranslateVirtual(buffer_ptr);
+  XELOGI("XGI::DispatchMessageSync({:08X}, {:08X}, {:08X})", message,
+         buffer_ptr, buffer_length);
   switch (message) {
     case 0x000B0006: {
       assert_true(!buffer_length ||
@@ -170,25 +172,23 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       return X_E_SUCCESS;
     }
     case 0x000B0010: {
-      assert_true(!buffer_length || buffer_length == 28);
+      assert_true(!buffer_length ||
+                  buffer_length == sizeof(XGI_SESSION_CREATE));
       // Sequence:
       // - XamSessionCreateHandle
       // - XamSessionRefObjByHandle
       // - [this]
       // - CloseHandle
-      uint32_t session_ptr = xe::load_and_swap<uint32_t>(buffer + 0x0);
-      uint32_t flags = xe::load_and_swap<uint32_t>(buffer + 0x4);
-      uint32_t num_slots_public = xe::load_and_swap<uint32_t>(buffer + 0x8);
-      uint32_t num_slots_private = xe::load_and_swap<uint32_t>(buffer + 0xC);
-      uint32_t user_xuid = xe::load_and_swap<uint32_t>(buffer + 0x10);
-      uint32_t session_info_ptr = xe::load_and_swap<uint32_t>(buffer + 0x14);
-      uint32_t nonce_ptr = xe::load_and_swap<uint32_t>(buffer + 0x18);
+      XGI_SESSION_CREATE* data =
+          reinterpret_cast<XGI_SESSION_CREATE*>(buffer);
 
       XELOGI(
           "XSessionCreate: session={:08X}, flags={:08X}, public_slots={}, "
-          "private_slots={}, xuid={:08X}, info={:08X}, nonce={:08X}",
-          session_ptr, flags, num_slots_public, num_slots_private, user_xuid,
-          session_info_ptr, nonce_ptr);
+          "private_slots={}, user_index={}, info={:08X}, nonce={:08X}",
+          (uint32_t)data->obj_ptr, (uint32_t)data->flags,
+          (uint32_t)data->num_slots_public, (uint32_t)data->num_slots_private,
+          (uint32_t)data->user_index, (uint32_t)data->session_info_ptr,
+          (uint32_t)data->nonce_ptr);
 
       // 584107FB expects offline session creation using flags 0 to succeed
       // while offline.
@@ -196,6 +196,7 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       //
       // Allow offline and system link session creation, but do not allow
       // Xbox Live featured session creation.
+      uint32_t flags = data->flags;
       constexpr uint32_t HOST = 0x01;
       constexpr uint32_t PEER_NETWORK = 0x20;  // System Link
       constexpr uint32_t SYSTEMLINK_ALLOWED = HOST | PEER_NETWORK;
@@ -205,109 +206,148 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
         return 0x80155209;  // X_ONLINE_E_SESSION_NOT_LOGGED_ON
       }
 
-      // Fill in session info with our local address for system link
-      if (session_info_ptr) {
-        // XSESSION_INFO structure:
-        // 0x00: XNKID sessionID (8 bytes)
-        // 0x08: XNKEY keyExchangeKey (16 bytes)
-        // 0x18: XNADDR hostAddress (36 bytes)
-        //   XNADDR layout:
-        //     0x00: in_addr ina (4 bytes) - IP address
-        //     0x04: in_addr inaOnline (4 bytes) - Online IP
-        //     0x08: uint16_t wPortOnline (2 bytes) - Online port
-        //     0x0A: uint8_t abEnet[6] - MAC address
-        //     0x10: uint8_t abOnline[20] - Online ID
-        auto session_info = memory_->TranslateVirtual(session_info_ptr);
-
-        // Generate a random session ID
-        for (int i = 0; i < 8; i++) {
-          session_info[i] = static_cast<uint8_t>(rand() & 0xFF);
-        }
-
-        // Generate a random key exchange key
-        for (int i = 0; i < 16; i++) {
-          session_info[8 + i] = static_cast<uint8_t>(rand() & 0xFF);
-        }
-
-        // Fill in host address with local network info
-        auto host_addr = session_info + 24;  // Offset to XNADDR
-
-        // Query the local adapter for IP and MAC
-        auto adapter = QueryActiveAdapter();
-        if (adapter.found) {
-          // ina at offset 0 (4 bytes, network byte order)
-          std::memcpy(host_addr, &adapter.ip_addr, 4);
-          // abEnet at offset 10 (0x0A)
-          std::memcpy(host_addr + 10, adapter.mac_addr, 6);
-        }
-
-        XELOGI("XSessionCreate: initialized session info at {:08X}",
-               session_info_ptr);
+      // Get XSession object from guest object pointer
+      uint8_t* obj_ptr = memory_->TranslateVirtual<uint8_t*>(data->obj_ptr);
+      auto session =
+          XObject::GetNativeObject<XSession>(kernel_state_, obj_ptr);
+      if (!session) {
+        XELOGE("XSessionCreate: invalid session object");
+        return X_STATUS_INVALID_HANDLE;
       }
 
-      // Fill in nonce if provided
-      if (nonce_ptr) {
-        auto nonce = memory_->TranslateVirtual(nonce_ptr);
-        for (int i = 0; i < 8; i++) {
-          nonce[i] = static_cast<uint8_t>(rand() & 0xFF);
-        }
-        XELOGI("XSessionCreate: initialized nonce at {:08X}", nonce_ptr);
+      // Log session info contents for debugging
+      if (data->session_info_ptr) {
+        auto session_info =
+            memory_->TranslateVirtual<XSESSION_INFO*>(data->session_info_ptr);
+        XELOGI(
+            "XSessionCreate: session_info hostAddress.ina={:08X}, "
+            "MAC={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+            (uint32_t)session_info->hostAddress.ina,
+            session_info->hostAddress.abEnet[0],
+            session_info->hostAddress.abEnet[1],
+            session_info->hostAddress.abEnet[2],
+            session_info->hostAddress.abEnet[3],
+            session_info->hostAddress.abEnet[4],
+            session_info->hostAddress.abEnet[5]);
       }
 
-      return X_E_SUCCESS;
+      auto result =
+          session->CreateSession(data->user_index, data->num_slots_public,
+                                 data->num_slots_private, data->flags,
+                                 data->session_info_ptr, data->nonce_ptr);
+
+      return result;
     }
     case 0x000B0011: {
+      // XSessionDelete
+      assert_true(!buffer_length ||
+                  buffer_length == sizeof(XGI_SESSION_STATE));
       XELOGI("XSessionDelete: buffer={:08X}, len={:08X}", buffer_ptr,
              buffer_length);
-      return X_STATUS_SUCCESS;
+
+      XGI_SESSION_STATE* data = reinterpret_cast<XGI_SESSION_STATE*>(buffer);
+      uint8_t* obj_ptr = memory_->TranslateVirtual<uint8_t*>(data->obj_ptr);
+      auto session =
+          XObject::GetNativeObject<XSession>(kernel_state_, obj_ptr);
+      if (!session) {
+        return X_STATUS_INVALID_HANDLE;
+      }
+
+      return session->DeleteSession();
     }
     case 0x000B0012: {
-      assert_true(buffer_length == 0x14);
-      uint32_t session_ptr = xe::load_and_swap<uint32_t>(buffer + 0x0);
-      uint32_t array_count = xe::load_and_swap<uint32_t>(buffer + 0x4);
-      uint32_t xuid_array_ptr = xe::load_and_swap<uint32_t>(buffer + 0x8);
-      uint32_t indices_array_ptr = xe::load_and_swap<uint32_t>(buffer + 0xC);
-      uint32_t private_slots_array = xe::load_and_swap<uint32_t>(buffer + 0x10);
+      // XSessionJoinLocal
+      assert_true(!buffer_length ||
+                  buffer_length == sizeof(XGI_SESSION_MANAGE));
+      XGI_SESSION_MANAGE* data = reinterpret_cast<XGI_SESSION_MANAGE*>(buffer);
 
       XELOGI(
-          "XSessionJoin: session={:08X}, count={}, xuids={:08X}, "
+          "XSessionJoinLocal: session={:08X}, count={}, xuids={:08X}, "
           "indices={:08X}, private_slots={:08X}",
-          session_ptr, array_count, xuid_array_ptr, indices_array_ptr,
-          private_slots_array);
-      return X_E_SUCCESS;
+          (uint32_t)data->obj_ptr, (uint32_t)data->array_count,
+          (uint32_t)data->xuid_array_ptr, (uint32_t)data->indices_array_ptr,
+          (uint32_t)data->private_slots_array_ptr);
+
+      uint8_t* obj_ptr = memory_->TranslateVirtual<uint8_t*>(data->obj_ptr);
+      auto session =
+          XObject::GetNativeObject<XSession>(kernel_state_, obj_ptr);
+      if (!session) {
+        return X_STATUS_INVALID_HANDLE;
+      }
+      return session->JoinSession(data);
     }
     case 0x000B0013: {
-      uint32_t session_ptr = xe::load_and_swap<uint32_t>(buffer + 0x0);
-      uint32_t array_count = xe::load_and_swap<uint32_t>(buffer + 0x4);
-      uint32_t xuid_array_ptr = xe::load_and_swap<uint32_t>(buffer + 0x8);
-      uint32_t indices_array_ptr = xe::load_and_swap<uint32_t>(buffer + 0xC);
-      uint32_t private_slots_array = xe::load_and_swap<uint32_t>(buffer + 0x10);
+      // XSessionLeaveLocal
+      assert_true(!buffer_length ||
+                  buffer_length == sizeof(XGI_SESSION_MANAGE));
+      XGI_SESSION_MANAGE* data = reinterpret_cast<XGI_SESSION_MANAGE*>(buffer);
 
       XELOGI(
-          "XSessionLeave: session={:08X}, count={}, xuids={:08X}, "
-          "indices={:08X}, private_slots={:08X}, buffer_len={:08X}",
-          session_ptr, array_count, xuid_array_ptr, indices_array_ptr,
-          private_slots_array, buffer_length);
-      return X_E_SUCCESS;
+          "XSessionLeaveLocal: session={:08X}, count={}, xuids={:08X}, "
+          "indices={:08X}, private_slots={:08X}",
+          (uint32_t)data->obj_ptr, (uint32_t)data->array_count,
+          (uint32_t)data->xuid_array_ptr, (uint32_t)data->indices_array_ptr,
+          (uint32_t)data->private_slots_array_ptr);
+
+      uint8_t* obj_ptr = memory_->TranslateVirtual<uint8_t*>(data->obj_ptr);
+      auto session =
+          XObject::GetNativeObject<XSession>(kernel_state_, obj_ptr);
+      if (!session) {
+        return X_STATUS_INVALID_HANDLE;
+      }
+      return session->LeaveSession(data);
     }
     case 0x000B0014: {
+      // XSessionStart
+      assert_true(!buffer_length ||
+                  buffer_length == sizeof(XGI_SESSION_STATE));
       XELOGI("XSessionStart: buffer={:08X}", buffer_ptr);
-      return X_STATUS_SUCCESS;
+
+      XGI_SESSION_STATE* data = reinterpret_cast<XGI_SESSION_STATE*>(buffer);
+      uint8_t* obj_ptr = memory_->TranslateVirtual<uint8_t*>(data->obj_ptr);
+      auto session =
+          XObject::GetNativeObject<XSession>(kernel_state_, obj_ptr);
+      if (!session) {
+        return X_STATUS_INVALID_HANDLE;
+      }
+      return session->StartSession();
     }
     case 0x000B0015: {
+      // XSessionEnd
+      assert_true(!buffer_length ||
+                  buffer_length == sizeof(XGI_SESSION_STATE));
       XELOGI("XSessionEnd: buffer={:08X}, len={:08X}", buffer_ptr,
              buffer_length);
-      return X_STATUS_SUCCESS;
+
+      XGI_SESSION_STATE* data = reinterpret_cast<XGI_SESSION_STATE*>(buffer);
+      uint8_t* obj_ptr = memory_->TranslateVirtual<uint8_t*>(data->obj_ptr);
+      auto session =
+          XObject::GetNativeObject<XSession>(kernel_state_, obj_ptr);
+      if (!session) {
+        return X_STATUS_INVALID_HANDLE;
+      }
+      return session->EndSession();
     }
     case 0x000B0016: {
-      XELOGI("XSessionSearch: buffer={:08X}, len={:08X}", buffer_ptr,
-             buffer_length);
+      // XSessionSearch
+      XELOGW("XSessionSearch: not implemented");
       return X_E_SUCCESS;
     }
     case 0x000B0017: {
+      // XSessionModify
+      assert_true(!buffer_length ||
+                  buffer_length == sizeof(XGI_SESSION_MODIFY));
       XELOGI("XSessionModify: buffer={:08X}, len={:08X}", buffer_ptr,
              buffer_length);
-      return X_E_SUCCESS;
+
+      XGI_SESSION_MODIFY* data = reinterpret_cast<XGI_SESSION_MODIFY*>(buffer);
+      uint8_t* obj_ptr = memory_->TranslateVirtual<uint8_t*>(data->obj_ptr);
+      auto session =
+          XObject::GetNativeObject<XSession>(kernel_state_, obj_ptr);
+      if (!session) {
+        return X_STATUS_INVALID_HANDLE;
+      }
+      return session->ModifySession(data);
     }
     case 0x000B0018: {
       XELOGI("XSessionMigrateHost: buffer={:08X}, len={:08X}", buffer_ptr,
@@ -315,14 +355,38 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       return X_E_SUCCESS;
     }
     case 0x000B0019: {
+      // XSessionLeaveLocal (alternative entry point, same as 0x000B0013)
+      assert_true(!buffer_length ||
+                  buffer_length == sizeof(XGI_SESSION_MANAGE));
+      XGI_SESSION_MANAGE* data = reinterpret_cast<XGI_SESSION_MANAGE*>(buffer);
+
       XELOGI("XSessionLeaveLocal: buffer={:08X}, len={:08X}", buffer_ptr,
              buffer_length);
-      return X_E_SUCCESS;
+
+      uint8_t* obj_ptr = memory_->TranslateVirtual<uint8_t*>(data->obj_ptr);
+      auto session =
+          XObject::GetNativeObject<XSession>(kernel_state_, obj_ptr);
+      if (!session) {
+        return X_STATUS_INVALID_HANDLE;
+      }
+      return session->LeaveSession(data);
     }
     case 0x000B001A: {
+      // XSessionLeaveRemote
+      assert_true(!buffer_length ||
+                  buffer_length == sizeof(XGI_SESSION_MANAGE));
+      XGI_SESSION_MANAGE* data = reinterpret_cast<XGI_SESSION_MANAGE*>(buffer);
+
       XELOGI("XSessionLeaveRemote: buffer={:08X}, len={:08X}", buffer_ptr,
              buffer_length);
-      return X_E_SUCCESS;
+
+      uint8_t* obj_ptr = memory_->TranslateVirtual<uint8_t*>(data->obj_ptr);
+      auto session =
+          XObject::GetNativeObject<XSession>(kernel_state_, obj_ptr);
+      if (!session) {
+        return X_STATUS_INVALID_HANDLE;
+      }
+      return session->LeaveSession(data);
     }
     case 0x000B001B: {
       XELOGI("XSessionArbitrationRegister: buffer={:08X}, len={:08X}",
@@ -330,9 +394,22 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       return X_E_SUCCESS;
     }
     case 0x000B001C: {
+      // XSessionGetDetails
+      assert_true(!buffer_length ||
+                  buffer_length == sizeof(XGI_SESSION_DETAILS));
       XELOGI("XSessionGetDetails: buffer={:08X}, len={:08X}", buffer_ptr,
              buffer_length);
-      return X_E_SUCCESS;
+
+      XGI_SESSION_DETAILS* data =
+          reinterpret_cast<XGI_SESSION_DETAILS*>(buffer);
+      uint8_t* obj_ptr = memory_->TranslateVirtual<uint8_t*>(data->obj_ptr);
+      auto session =
+          XObject::GetNativeObject<XSession>(kernel_state_, obj_ptr);
+      if (!session) {
+        XELOGE("XSessionGetDetails: invalid session object");
+        return X_STATUS_INVALID_HANDLE;
+      }
+      return session->GetSessionDetails(data);
     }
     case 0x000B001D: {
       XELOGI("XSessionFlushStats: buffer={:08X}, len={:08X}", buffer_ptr,
@@ -352,7 +429,67 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
         xe::be<uint32_t> results_guest_address;
       }* data = reinterpret_cast<XUserReadStats*>(buffer);
 
-      return 0x80151802;  // X_ONLINE_E_LOGON_NOT_LOGGED_ON
+      uint32_t results_addr =
+          static_cast<uint32_t>(data->results_guest_address);
+      if (!results_addr) {
+        return X_E_INVALIDARG;
+      }
+
+      // X_USER_STATS_READ_RESULTS: {num_views: u32, views_ptr: u32}
+      struct StatsReadResults {
+        xe::be<uint32_t> num_views;
+        xe::be<uint32_t> views_ptr;
+      };
+
+      // X_USER_STATS_VIEW: {view_id: u32, total_view_rows: u32, num_rows: u32,
+      // rows_ptr: u32}
+      struct StatsView {
+        xe::be<uint32_t> view_id;
+        xe::be<uint32_t> total_view_rows;
+        xe::be<uint32_t> num_rows;
+        xe::be<uint32_t> rows_ptr;
+      };
+
+      auto* results =
+          kernel_state_->memory()->TranslateVirtual<StatsReadResults*>(
+              results_addr);
+
+      uint32_t specs_count = static_cast<uint32_t>(data->specs_count);
+      uint32_t specs_addr = static_cast<uint32_t>(data->specs_guest_address);
+
+      if (specs_count == 0 || !specs_addr) {
+        results->num_views = 0;
+        results->views_ptr = 0;
+        return X_E_SUCCESS;
+      }
+
+      // Allocate guest memory for the views array
+      uint32_t views_size = specs_count * static_cast<uint32_t>(sizeof(StatsView));
+      uint32_t views_guest =
+          kernel_state_->memory()->SystemHeapAlloc(views_size);
+      auto* views =
+          kernel_state_->memory()->TranslateVirtual<StatsView*>(views_guest);
+      std::memset(views, 0, views_size);
+
+      // Read spec view_ids - each spec starts with a view_id u32
+      // X_USER_STATS_SPEC layout: {view_id: u32, num_column_ids: u32,
+      // column_ids: u16[64]} = 0x88 bytes
+      const uint32_t spec_stride = 0x88;
+      auto* specs_base =
+          kernel_state_->memory()->TranslateVirtual<uint8_t*>(specs_addr);
+      for (uint32_t i = 0; i < specs_count; i++) {
+        auto* spec_view_id = reinterpret_cast<xe::be<uint32_t>*>(
+            specs_base + i * spec_stride);
+        views[i].view_id = *spec_view_id;
+        views[i].total_view_rows = 0;
+        views[i].num_rows = 0;
+        views[i].rows_ptr = 0;
+      }
+
+      results->num_views = specs_count;
+      results->views_ptr = views_guest;
+
+      return X_E_SUCCESS;
     }
     case 0x000B0036: {
       // Called after opening xbox live arcade and clicking on xbox live v5759

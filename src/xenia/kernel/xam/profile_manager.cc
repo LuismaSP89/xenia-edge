@@ -10,6 +10,7 @@
 #include "xenia/kernel/xam/profile_manager.h"
 
 #include <map>
+#include <random>
 
 #include "xenia/base/logging.h"
 #include "xenia/config.h"
@@ -354,6 +355,19 @@ void ProfileManager::Login(const uint64_t xuid, const uint8_t user_index,
   }
 
   auto& profile = accounts_[xuid];
+
+  // Generate online XUID if profile is live-enabled but doesn't have one.
+  // Matches netplay: (0x9ULL << 48) + random.
+  // Games check for 0009... prefix to determine online status.
+  if (profile.IsLiveEnabled() &&
+      static_cast<uint64_t>(profile.xuid_online) == 0) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    profile.xuid_online = (0x9ULL << 48) + (gen() % (1ULL << 31));
+    XELOGI("ProfileManager: Generated online XUID {:016X} for {:016X}",
+           static_cast<uint64_t>(profile.xuid_online), xuid);
+  }
+
   const uint8_t assigned_user_slot =
       user_index < XUserMaxUserCount ? user_index : FindFirstFreeProfileSlot();
 
@@ -475,6 +489,22 @@ uint8_t ProfileManager::GetUserIndexAssignedToProfile(
     }
 
     if (entry->xuid() != xuid) {
+      continue;
+    }
+
+    return index;
+  }
+  return XUserIndexAny;
+}
+
+uint8_t ProfileManager::GetUserIndexAssignedToLiveProfile(
+    const uint64_t xuid_online) const {
+  for (const auto& [index, entry] : logged_profiles_) {
+    if (!entry) {
+      continue;
+    }
+
+    if (entry->GetOnlineXUID() != xuid_online) {
       continue;
     }
 
@@ -613,6 +643,63 @@ bool ProfileManager::UpdateAccount(const uint64_t xuid,
   // Refresh the in-memory account data
   accounts_.insert_or_assign(xuid, *account);
   return true;
+}
+
+bool ProfileManager::ModifyAccount(
+    const uint64_t xuid, X_XAMACCOUNTINFO* account,
+    std::function<bool(X_XAMACCOUNTINFO*)> action) {
+  const uint8_t user_index = GetUserIndexAssignedToProfile(xuid);
+
+  if (user_index < XUserMaxUserCount) {
+    Logout(user_index);
+  }
+
+  if (!accounts_.count(xuid)) {
+    return false;
+  }
+
+  auto result = action(account);
+
+  if (!MountProfile(xuid)) {
+    return false;
+  }
+
+  if (!UpdateAccount(xuid, account)) {
+    return false;
+  }
+
+  if (!DismountProfile(xuid)) {
+    return false;
+  }
+
+  if (user_index < XUserMaxUserCount) {
+    Login(xuid);
+  }
+
+  return result;
+}
+
+bool ProfileManager::ConvertToXboxLiveEnabledProfile(const uint64_t xuid) {
+  if (!accounts_.count(xuid)) {
+    return false;
+  }
+
+  X_XAMACCOUNTINFO* account = &accounts_[xuid];
+
+  auto run = [](X_XAMACCOUNTINFO* account_info) {
+    account_info->reserved_flags =
+        account_info->reserved_flags |
+        X_XAMACCOUNTINFO::AccountReservedFlags::kLiveEnabled;
+
+    // Generate once
+    if (static_cast<uint64_t>(account_info->xuid_online) == 0) {
+      account_info->xuid_online = GenerateXuidOnline();
+    }
+
+    return true;
+  };
+
+  return ModifyAccount(xuid, account, run);
 }
 
 void ProfileManager::UpdateConfig(const uint64_t xuid, const uint8_t slot) {
