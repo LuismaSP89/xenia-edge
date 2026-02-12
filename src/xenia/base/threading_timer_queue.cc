@@ -8,41 +8,22 @@
  */
 
 #include <forward_list>
+#include <thread>
 
-#include "third_party/disruptorplus/include/disruptorplus/blocking_wait_strategy.hpp"
-#include "third_party/disruptorplus/include/disruptorplus/multi_threaded_claim_strategy.hpp"
-#include "third_party/disruptorplus/include/disruptorplus/ring_buffer.hpp"
-#include "third_party/disruptorplus/include/disruptorplus/sequence_barrier.hpp"
-#include "third_party/disruptorplus/include/disruptorplus/spin_wait.hpp"
-#include "third_party/disruptorplus/include/disruptorplus/spin_wait_strategy.hpp"
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
+    defined(_M_IX86)
+#include <immintrin.h>
+#endif
+
+#include "third_party/concurrentqueue/blockingconcurrentqueue.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/threading.h"
 #include "xenia/base/threading_timer_queue.h"
-
-namespace dp = disruptorplus;
 
 namespace xe {
 namespace threading {
 
 using WaitItem = TimerQueueWaitItem;
-/*
-        chrispy: changed this to a blocking wait from a spin-wait, the spin was
-   monopolizing a ton of cpu time (depending on the game 2-4% of total cpu time)
-   on my 3990x no complaints since that change
-*/
-
-/*
-        edit: actually had to change it back, when i was testing it only worked
-   because i fixed disruptorplus' code to compile (it gives wrong args to
-   condition_variable::wait_until) but now builds
-
-*/
-
-/*
-    edit2: (30.12.2024) After uplifting version of MSVC compiler Xenia cannot be
-   correctly initialized if you're using proton.
-*/
-using WaitStrat = dp::spin_wait_strategy;
 
 class TimerQueue {
  public:
@@ -50,13 +31,7 @@ class TimerQueue {
   static_assert(clock::is_steady);
 
  public:
-  TimerQueue()
-      : buffer_(kWaitCount),
-        wait_strategy_(),
-        claim_strategy_(kWaitCount, wait_strategy_),
-        consumed_(wait_strategy_),
-        shutdown_(false) {
-    claim_strategy_.add_claim_barrier(consumed_);
+  TimerQueue() : queue_(), shutdown_(false) {
     dispatch_thread_ = std::thread(&TimerQueue::TimerThreadMain, this);
   }
 
@@ -74,7 +49,6 @@ class TimerQueue {
   }
 
   void TimerThreadMain() {
-    dp::sequence_t next_sequence = 0;
     const auto comp = [](const std::shared_ptr<WaitItem>& left,
                          const std::shared_ptr<WaitItem>& right) {
       return left->due_ < right->due_;
@@ -84,21 +58,25 @@ class TimerQueue {
 
     while (!shutdown_.load(std::memory_order_relaxed)) {
       {
-        // Consume new wait items and add them to sorted wait queue
-        dp::sequence_t available = claim_strategy_.wait_until_published(
-            next_sequence, next_sequence - 1,
-            wait_queue_.empty() ? clock::time_point::max()
-                                : wait_queue_.front()->due_);
+        // Calculate timeout until next timer is due
+        auto now = clock::now();
+        auto timeout_duration =
+            wait_queue_.empty()
+                ? std::chrono::hours(24)
+                : std::max(
+                      std::chrono::microseconds(0),
+                      std::chrono::duration_cast<std::chrono::microseconds>(
+                          wait_queue_.front()->due_ - now));
 
-        // Check for timeout
-        if (available != next_sequence - 1) {
+        // Wait for new items with timeout
+        std::shared_ptr<WaitItem> item;
+        if (queue_.wait_dequeue_timed(item, timeout_duration)) {
+          // Got at least one item, collect any others available
           std::forward_list<std::shared_ptr<WaitItem>> wait_items;
-          do {
-            wait_items.push_front(std::move(buffer_[next_sequence]));
-          } while (next_sequence++ != available);
-
-          consumed_.publish(available);
-
+          wait_items.push_front(std::move(item));
+          while (queue_.try_dequeue(item)) {
+            wait_items.push_front(std::move(item));
+          }
           wait_items.sort(comp);
           wait_queue_.merge(wait_items, comp);
         }
@@ -151,9 +129,7 @@ class TimerQueue {
     wait_item->due_ =
         std::max(clock::now() - wait_item->interval_, wait_item->due_);
 
-    auto sequence = claim_strategy_.claim_one();
-    buffer_[sequence] = std::move(wait_item);
-    claim_strategy_.publish(sequence);
+    queue_.enqueue(std::move(wait_item));
 
     return wait_item_weak;
   }
@@ -161,13 +137,7 @@ class TimerQueue {
   const std::thread& dispatch_thread() const { return dispatch_thread_; }
 
  private:
-  // This ring buffer will be used to introduce timers queued by the public API
-  static constexpr size_t kWaitCount = 512;
-  dp::ring_buffer<std::shared_ptr<WaitItem>> buffer_;
-
-  WaitStrat wait_strategy_;
-  dp::multi_threaded_claim_strategy<WaitStrat> claim_strategy_;
-  dp::sequence_barrier<WaitStrat> consumed_;
+  moodycamel::BlockingConcurrentQueue<std::shared_ptr<WaitItem>> queue_;
 
   // This is a _sorted_ (ascending due_) list of active timers managed by a
   // dedicated thread
@@ -193,7 +163,8 @@ void TimerQueueWaitItem::Disarm() {
     // Normal case can handle the rest
   }
 
-  dp::spin_wait spinner;
+  // Adaptive spin-wait implementation
+  uint32_t spin_count = 0;
   state = State::kIdle;
   // Classes which hold WaitItems will often call Disarm() to cancel them during
   // destruction. This may lead to race conditions when the dispatch thread
@@ -208,7 +179,23 @@ void TimerQueueWaitItem::Disarm() {
       break;
     }
     state = State::kIdle;
-    spinner.spin_once();
+
+    // Adaptive backoff: busy spin -> yield -> sleep
+    if (spin_count < 10) {
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
+    defined(_M_IX86)
+      _mm_pause();
+#elif defined(__aarch64__) || defined(_M_ARM64)
+      __asm__ volatile("yield" ::: "memory");
+#else
+      std::this_thread::yield();
+#endif
+    } else if ((spin_count - 10) % 20 == 19) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } else {
+      std::this_thread::yield();
+    }
+    ++spin_count;
   }
 }
 // unused
