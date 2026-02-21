@@ -674,7 +674,7 @@ void XmaContextNew::UpdateLoopStatus(XMA_CONTEXT_DATA* data) {
            id(), data->input_buffer_read_offset, data->loop_end,
            data->loop_start, data->loop_count);
 
-  if (data->input_buffer_read_offset <= loop_end) {
+  if (data->input_buffer_read_offset < loop_end) {
     return;
   }
 
