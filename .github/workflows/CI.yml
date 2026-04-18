@@ -206,9 +206,11 @@ jobs:
           if-no-files-found: error
 
   build-windows:
-    name: Build Windows
+    name: Build Windows (x64 cross from ARM64)
     needs: lint
-    runs-on: windows-2025
+    # ARM64 Windows runner cross-compiling to x64. Exercises the cross-compile
+    # path and lets us compare build time against an x64 host.
+    runs-on: windows-11-arm
     env:
       POWERSHELL_TELEMETRY_OPTOUT: 1
     steps:
@@ -222,29 +224,31 @@ jobs:
         uses: actions/cache@v3
         with:
           path: C:\VulkanSDK
-          key: ${{ runner.os }}-vulkan-sdk-${{ hashFiles('**/vulkan-sdk.exe') }}
+          key: ${{ runner.os }}-arm64-vulkan-sdk-${{ hashFiles('**/vulkan-sdk.exe') }}
           restore-keys: |
-            ${{ runner.os }}-vulkan-sdk-
+            ${{ runner.os }}-arm64-vulkan-sdk-
 
       - name: Cache Qt6
         id: cache-qt
         uses: actions/cache@v3
         with:
           path: C:\Qt
-          key: ${{ runner.os }}-qt6-6.10.1
+          key: ${{ runner.os }}-arm64-qt6-6.10.1-cross
           restore-keys: |
-            ${{ runner.os }}-qt6-
+            ${{ runner.os }}-arm64-qt6-
 
       - name: Cache submodules
         id: cache-submodules
         uses: actions/cache@v3
         with:
           path: third_party
-          key: ${{ runner.os }}-submodules-${{ hashFiles('.gitmodules') }}-${{ hashFiles('.git/modules/third_party/*/HEAD') }}
+          key: ${{ runner.os }}-arm64-submodules-${{ hashFiles('.gitmodules') }}-${{ hashFiles('.git/modules/third_party/*/HEAD') }}
 
       - name: Setup
         run: |
-          # Install Vulkan SDK for headers + loader
+          # Install Vulkan SDK for headers + loader. The x64 installer runs
+          # under Prism emulation on ARM64 Windows; spirv-opt / glslangValidator
+          # are used at build time and likewise run under emulation.
           if (Test-Path -Path "C:\VulkanSDK") {
             echo "Vulkan SDK found in cache."
           } else {
@@ -289,11 +293,20 @@ jobs:
             echo "Warning: fxc.exe not found in Windows SDK"
           }
 
-          # Install Qt6
+          # Install Qt6. aqt ≤3.3.0 fails on 6.10.1+ cross_compiled archives
+          # because Qt renamed the host-runnable .bat shims from qmake.bat /
+          # qtpaths.bat to host-qmake.bat / host-qtpaths.bat; the patching
+          # step in stock aqt still looks for the old names. Use master until
+          # the fix (miurahr/aqtinstall#952) lands in a tagged release.
           $qtCacheHit = '${{ steps.cache-qt.outputs.cache-hit }}'
           if ($qtCacheHit -ne 'true') {
-            pip install aqtinstall
-            aqt install-qt windows desktop 6.10.1 win64_msvc2022_64 -O C:\Qt
+            python -m pip install --upgrade git+https://github.com/miurahr/aqtinstall.git
+            # Host (ARM64) Qt — aqt offers no native arm64 flavor, only the
+            # cross_compiled one, whose .bat shims happen to work fine on
+            # ARM64 hosts too.
+            python -m aqt install-qt windows desktop 6.10.1 win64_msvc2022_arm64_cross_compiled -m qtmultimedia -O C:\Qt
+            # Target (x64) Qt — tools run under Prism emulation on ARM64.
+            python -m aqt install-qt windows desktop 6.10.1 win64_msvc2022_64 -m qtmultimedia -O C:\Qt
           }
 
           $cacheHit = '${{ steps.cache-submodules.outputs.cache-hit }}'
@@ -305,17 +318,17 @@ jobs:
           python xenia-build.py fetchdata
 
       - name: Build
-        run: python xenia-build.py build --config=Release --target=xenia-app
+        run: python xenia-build.py build --config=Release --target=xenia-app --target-arch x64
       - name: Prepare artifacts
         id: prepare_artifacts
         run: |
-          $binary = 'build\bin\Windows\Release\xenia_edge.exe'
+          $binary = 'build-x64\bin\Windows\Release\xenia_edge.exe'
           if ((get-item $binary).Length -le 100000) {
             echo "::error::$binary is too small."
           }
-          robocopy . build\bin\Windows\Release LICENSE /r:0 /w:0
+          robocopy . build-x64\bin\Windows\Release LICENSE /r:0 /w:0
           # Copy all files and directories (Qt DLLs, plugins, etc.) excluding build artifacts
-          robocopy build\bin\Windows\Release artifacts\xenia_edge /MIR /r:0 /w:0 /XF *.lib *.idb *.exp /XD generic iconengines imageformats networkinformation styles tls
+          robocopy build-x64\bin\Windows\Release artifacts\xenia_edge /MIR /r:0 /w:0 /XF *.lib *.idb *.exp /XD generic iconengines imageformats networkinformation styles tls
           If ($LastExitCode -le 7) { echo "LastExitCode = $LastExitCode";$LastExitCode = 0 }
       - name: Upload xenia edge artifacts
         if: steps.prepare_artifacts.outcome == 'success'
