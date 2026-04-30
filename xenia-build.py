@@ -803,6 +803,7 @@ def run_cmake_configure(cc=None, generator=None, build_tests=False,
                   f"'MSVC {target.upper()} build tools' in Visual Studio.")
     args += [f"-DXENIA_BUILD_TESTS={'ON' if build_tests else 'OFF'}"]
     args += [f"-DXENIA_ENABLE_LTO={'OFF' if disable_lto else 'ON'}"]
+    args += ["-DCMAKE_TRY_COMPILE_CONFIGURATION=Release"]
     if config:
         args += [f"-DCMAKE_BUILD_TYPE={config.title()}"]
     qt_host_path = os.environ.get("QT_HOST_PATH")
