@@ -212,8 +212,8 @@ int InstrEmit_fmsubsx(PPCHIRBuilder& f, const InstrData& i) {
 
 int InstrEmit_fnmaddx(PPCHIRBuilder& f, const InstrData& i) {
   // frD <- -([frA x frC] + frB)
-  Value* v = f.Neg(
-      f.MulAdd(f.LoadFPR(i.A.FRA), f.LoadFPR(i.A.FRC), f.LoadFPR(i.A.FRB)));
+  Value* v = f.MulAdd(f.LoadFPR(i.A.FRA), f.LoadFPR(i.A.FRC),
+                      f.LoadFPR(i.A.FRB), /*negate_result=*/true);
   f.StoreFPR(i.A.FRT, v);
   f.UpdateFPSCR(v, i.A.Rc);
   return 0;
@@ -221,8 +221,8 @@ int InstrEmit_fnmaddx(PPCHIRBuilder& f, const InstrData& i) {
 
 int InstrEmit_fnmaddsx(PPCHIRBuilder& f, const InstrData& i) {
   // frD <- -([frA x frC] + frB)
-  Value* v = f.Neg(
-      f.MulAdd(f.LoadFPR(i.A.FRA), f.LoadFPR(i.A.FRC), f.LoadFPR(i.A.FRB)));
+  Value* v = f.MulAdd(f.LoadFPR(i.A.FRA), f.LoadFPR(i.A.FRC),
+                      f.LoadFPR(i.A.FRB), /*negate_result=*/true);
   v = f.ToSingle(v);
   f.StoreFPR(i.A.FRT, v);
   f.UpdateFPSCR(v, i.A.Rc);
@@ -231,8 +231,8 @@ int InstrEmit_fnmaddsx(PPCHIRBuilder& f, const InstrData& i) {
 
 int InstrEmit_fnmsubx(PPCHIRBuilder& f, const InstrData& i) {
   // frD <- -([frA x frC] - frB)
-  Value* v = f.Neg(
-      f.MulSub(f.LoadFPR(i.A.FRA), f.LoadFPR(i.A.FRC), f.LoadFPR(i.A.FRB)));
+  Value* v = f.MulSub(f.LoadFPR(i.A.FRA), f.LoadFPR(i.A.FRC),
+                      f.LoadFPR(i.A.FRB), /*negate_result=*/true);
   f.StoreFPR(i.A.FRT, v);
   f.UpdateFPSCR(v, i.A.Rc);
   return 0;
@@ -240,8 +240,8 @@ int InstrEmit_fnmsubx(PPCHIRBuilder& f, const InstrData& i) {
 
 int InstrEmit_fnmsubsx(PPCHIRBuilder& f, const InstrData& i) {
   // frD <- -([frA x frC] - frB)
-  Value* v = f.Neg(
-      f.MulSub(f.LoadFPR(i.A.FRA), f.LoadFPR(i.A.FRC), f.LoadFPR(i.A.FRB)));
+  Value* v = f.MulSub(f.LoadFPR(i.A.FRA), f.LoadFPR(i.A.FRC),
+                      f.LoadFPR(i.A.FRB), /*negate_result=*/true);
   v = f.ToSingle(v);
   f.StoreFPR(i.A.FRT, v);
   f.UpdateFPSCR(v, i.A.Rc);
