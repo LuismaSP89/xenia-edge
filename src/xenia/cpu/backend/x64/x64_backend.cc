@@ -1088,11 +1088,12 @@ void* X64HelperEmitter::EmitGuestAndHostSynchronizeStackSizeLoadThunk(
 void* X64HelperEmitter::EmitScalarVRsqrteHelper() {
   _code_offsets code_offsets = {};
 
-  Xbyak::Label L18, L2, L35, L4, L9, L8, L10, L11, L12, L13, L1;
+  Xbyak::Label L18, L2, L35, L4, L9, L8, L10, L11, L1;
   Xbyak::Label LC1, _LCPI3_1;
   Xbyak::Label handle_denormal_input;
   Xbyak::Label specialcheck_1, convert_to_signed_inf_and_ret,
       handle_oddball_denormal;
+  Xbyak::Label handle_non_positive_normal, interpolate;
 
   auto emulate_lzcnt_helper_unary_reg = [this](auto& reg, auto& scratch_reg) {
     inLocalLabel();
@@ -1107,6 +1108,32 @@ void* X64HelperEmitter::EmitScalarVRsqrteHelper() {
   };
 
   vmovd(r8d, xmm0);
+  // Positive normals need none of the classification below, so derive the
+  // interpolation's three inputs directly and rejoin at the table lookup.
+  lea(eax, ptr[r8 - 0x00800000]);
+  cmp(eax, 0x7EFFFFFF);
+  ja(handle_non_positive_normal, CodeGenerator::T_NEAR);
+  // coefficient index = ((exponent & 1) << 4) | (mantissa >> 19)
+  mov(eax, r8d);
+  shr(eax, 19);
+  and_(eax, 15);
+  mov(edx, r8d);
+  shr(edx, 23);
+  and_(edx, 1);
+  shl(edx, 4);
+  or_(eax, edx);
+  // interpolation factor
+  mov(edx, r8d);
+  shr(edx, 9);
+  and_(edx, 1023);
+  // result exponent term, (127 - exponent) >> 1
+  mov(ecx, r8d);
+  shr(ecx, 24);
+  neg(ecx);
+  add(ecx, 63);
+  jmp(interpolate, CodeGenerator::T_NEAR);
+
+  L(handle_non_positive_normal);
   vmovaps(xmm1, xmm0);
   mov(ecx, r8d);
   // extract mantissa
@@ -1201,6 +1228,9 @@ void* X64HelperEmitter::EmitScalarVRsqrteHelper() {
   sar(ecx, 1);
   or_(eax, r9d);
   xor_(eax, 16);
+
+  // eax = coefficient index, edx = interpolation factor, ecx = exponent term.
+  L(interpolate);
   mov(r9d, ptr[backend()->LookupXMMConstantAddress32(XMMVRsqrteTableStart) +
                rax * 4]);
   mov(eax, r9d);
@@ -1209,46 +1239,36 @@ void* X64HelperEmitter::EmitScalarVRsqrteHelper() {
   sal(eax, 10);
   and_(eax, 0x3fffc00);
   sub(eax, edx);
-  bt(eax, 25);
-  jc(L12);
-  mov(edx, eax);
-  add(ecx, 6);
-  and_(edx, 0x1ffffff);
-
-  if (IsFeatureEnabled(kX64EmitLZCNT)) {
-    lzcnt(edx, edx);
-  } else {
-    emulate_lzcnt_helper_unary_reg(edx, r9d);
-  }
-
-  lea(r9d, ptr[rdx - 6]);
+  // The interpolated estimate is always within [2^24, 2^26), so normalizing it
+  // is a one-bit shift and needs no leading zero count.
+  lea(r9d, ptr[rax + rax]);
+  xor_(edx, edx);
+  test(eax, 0x2000000);
+  setz(dl);
+  cmovz(eax, r9d);
   sub(ecx, edx);
-  if (IsFeatureEnabled(kX64EmitBMI2)) {
-    shlx(eax, eax, r9d);
-  } else {
-    xchg(ecx, r9d);
-    shl(eax, cl);
-    xchg(ecx, r9d);
-  }
 
-  L(L12);
-  test(al, 5);
-  je(L13);
-  test(al, 2);
-  je(L13);
-  add(eax, 4);
+  // Round up by 4 when bit 1 and either bit 0 or bit 2 is set. Both of the
+  // tests this replaces are coin flips on real input, so keep it branchless.
+  mov(edx, eax);
+  shr(edx, 2);
+  or_(edx, eax);
+  mov(r9d, eax);
+  shr(r9d, 1);
+  and_(edx, r9d);
+  and_(edx, 1);
+  lea(eax, ptr[rax + rdx * 4]);
 
-  L(L13);
+  // Every input reaching here yields a biased exponent of 63..201, so the
+  // output can never be denormal and needs no flush.
   sal(ecx, 23);
   and_(r8d, 0x80000000);
   shr(eax, 2);
   add(ecx, 0x3f800000);
   and_(eax, 0x7fffff);
-  vxorps(xmm1, xmm1);
   or_(ecx, r8d);
   or_(ecx, eax);
   vmovd(xmm0, ecx);
-  vaddss(xmm0, xmm1);  // apply DAZ behavior to output
 
   L(L1);
   ret();
