@@ -1262,6 +1262,7 @@ static constinit const vec128_t xmm_consts[] = {
     /* XMMInt127              */ vec128i(0x7Fu),
     /* XMM2To32               */ vec128f(0x1.0p32f),
     /* XMMFloatInf */ vec128i(0x7f800000),
+    /* XMMDoubleInf */ vec128q(0x7ff0000000000000ULL),
 
     /* XMMIntsToBytes*/
     v128_setr_bytes(0, 4, 8, 12, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
@@ -1328,6 +1329,9 @@ static constinit const vec128_t xmm_consts[] = {
     // XMMVRsqrteTableBase
     vec128i(0)  // filled in later
 };
+static_assert(sizeof(xmm_consts) / sizeof(xmm_consts[0]) ==
+                  XMMVRsqrteTableBase + 1,
+              "XmmConst and xmm_consts must stay index-aligned");
 
 void* X64Emitter::FindByteConstantOffset(unsigned bytevalue) {
   for (auto& vec : xmm_consts) {
