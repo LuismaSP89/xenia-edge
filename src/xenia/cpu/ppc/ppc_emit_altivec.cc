@@ -1133,11 +1133,6 @@ int InstrEmit_vmulfp128(PPCHIRBuilder& f, const InstrData& i) {
 int InstrEmit_vnmsubfp_(PPCHIRBuilder& f, uint32_t vd, uint32_t va, uint32_t vb,
                         uint32_t vc) {
   // (VD) <- -(((VA) * (VC)) - (VB))
-  // NOTE: only one rounding should take place, but that's hard...
-  // This really needs VFNMSUB132PS/VFNMSUB213PS/VFNMSUB231PS but that's AVX.
-  // NOTE2: we could make vnmsub a new opcode, and then do it in double
-  // precision, rounding after the neg
-
   /*
   chrispy: this is untested, but i believe this has the same DAZ behavior for
   inputs as vmadd
@@ -1147,7 +1142,9 @@ int InstrEmit_vnmsubfp_(PPCHIRBuilder& f, uint32_t vd, uint32_t va, uint32_t vb,
   Value* b = f.VectorDenormFlush(f.LoadVR(vb));
   Value* c = f.VectorDenormFlush(f.LoadVR(vc));
 
-  Value* v = f.Neg(f.MulSub(a, c, b));
+  // The negation belongs to the opcode: hardware leaves a NaN result's sign
+  // alone, so negating afterwards would flip every NaN this produces.
+  Value* v = f.MulSub(a, c, b, /*negate_result=*/true);
   f.StoreVR(vd, v);
   return 0;
 }
