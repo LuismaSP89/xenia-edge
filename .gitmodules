@@ -1,4 +1,4 @@
-[submodule "third_party/xbyak"]
+﻿[submodule "third_party/xbyak"]
 	path = third_party/xbyak
 	url = https://github.com/herumi/xbyak.git
 [submodule "third_party/imgui"]
@@ -49,8 +49,8 @@
 	url = https://github.com/Cyan4973/xxHash.git
 [submodule "third_party/FFmpeg"]
 	path = third_party/FFmpeg
-	url = https://github.com/has207/FFmpeg.git
-	branch = xmaframes
+	url = https://github.com/LuismaSP89/FFmpeg.git
+	branch = xmaframes-error-propagation
 [submodule "third_party/FidelityFX-CAS"]
 	path = third_party/FidelityFX-CAS
 	url = https://github.com/GPUOpen-Effects/FidelityFX-CAS.git
