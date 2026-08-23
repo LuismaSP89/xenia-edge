@@ -114,8 +114,10 @@ class XmaContextNew : public XmaContext {
 
   RingBuffer PrepareOutputRingBuffer(XMA_CONTEXT_DATA* data);
 
-  bool DecodePacket(AVCodecContext* av_context, const AVPacket* av_packet,
-                    AVFrame* av_frame);
+  // Returns 0 on success (frame available), 1 when the codec needs more
+  // input (EAGAIN), -1 on a hard decode error.
+  int DecodePacket(AVCodecContext* av_context, const AVPacket* av_packet,
+                   AVFrame* av_frame);
 
   // Re-reads context from guest memory and merges only decoder-owned fields,
   // preserving any game modifications made during decoding.
@@ -138,6 +140,9 @@ class XmaContextNew : public XmaContext {
   // When true, the next decoded frame should skip leading subframes per
   // loop_subframe_skip (loop start adjustment).
   bool loop_start_skip_pending_ = false;
+  // Consecutive hard decode failures on this context, used to rate-limit
+  // error logging while the stream carries undecodable frames.
+  uint32_t consecutive_decode_errors_ = 0;
 };
 
 }  // namespace apu
