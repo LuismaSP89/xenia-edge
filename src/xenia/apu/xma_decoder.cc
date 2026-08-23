@@ -9,6 +9,9 @@
 
 #include "xenia/apu/xma_decoder.h"
 
+#include <mutex>
+#include <string>
+
 #include "xenia/apu/xma_context.h"
 #include "xenia/apu/xma_context_fake.h"
 #include "xenia/apu/xma_context_master.h"
@@ -131,6 +134,26 @@ void av_log_callback(void* avcl, int level, const char* fmt, va_list va) {
 
   StringBuffer buff;
   buff.AppendVarargs(fmt, va);
+
+  // Suppress runs of identical messages: a stream with systematically
+  // undecodable frames otherwise floods the log with thousands of identical
+  // per-frame errors. Log the first few, then one out of every 512.
+  {
+    static std::mutex log_dedup_mutex;
+    static std::string last_message;
+    static uint64_t repeat_count = 0;
+    std::lock_guard<std::mutex> lock(log_dedup_mutex);
+    if (buff.to_string_view() == last_message) {
+      repeat_count++;
+      if (repeat_count >= 8 && (repeat_count % 512) != 0) {
+        return;
+      }
+    } else {
+      last_message = buff.to_string();
+      repeat_count = 0;
+    }
+  }
+
   xe::logging::AppendLogLineFormat(LogSrc::Apu, log_level, level_char,
                                    "ffmpeg: {}", buff.to_string_view());
 }

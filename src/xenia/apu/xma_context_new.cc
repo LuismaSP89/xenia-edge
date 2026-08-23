@@ -261,6 +261,7 @@ void XmaContextNew::ClearLocked(XMA_CONTEXT_DATA* data) {
   current_frame_remaining_subframes_ = 0;
   loop_frame_output_limit_ = 0;
   loop_start_skip_pending_ = false;
+  consecutive_decode_errors_ = 0;
 }
 
 void XmaContextNew::Disable() { set_is_enabled(false); }
@@ -582,7 +583,9 @@ void XmaContextNew::Decode(XMA_CONTEXT_DATA* data) {
 
   PrepareDecoder(data->sample_rate, bool(data->is_stereo));
   PreparePacket(packet_info.current_frame_size_, padding_start);
-  if (DecodePacket(av_context_, av_packet_, av_frame_)) {
+  const int decode_result = DecodePacket(av_context_, av_packet_, av_frame_);
+  if (decode_result == 0) {
+    consecutive_decode_errors_ = 0;
     // dump_raw(av_frame_, id());
     ConvertFrame(reinterpret_cast<const uint8_t**>(&av_frame_->data),
                  bool(data->is_stereo), raw_frame_.data());
@@ -613,6 +616,18 @@ void XmaContextNew::Decode(XMA_CONTEXT_DATA* data) {
       }
       loop_start_skip_pending_ = false;
     }
+  } else if (decode_result < 0) {
+    // Hard decode error (corrupt or unsupported frame, e.g. ffmpeg rejecting
+    // num_vec_coeffs). Emit one frame of silence instead of producing no
+    // output: games hard-sync cutscenes and streamed audio to XMA output and
+    // stall forever if the stream stops advancing (LEGO LOTR intro cutscene).
+    // raw_frame_ was already zero-filled above. Flush the codec so a corrupt
+    // frame can't poison the decode of the following valid frames.
+    consecutive_decode_errors_++;
+    avcodec_flush_buffers(av_context_);
+    current_frame_remaining_subframes_ = 4 << data->is_stereo;
+    loop_frame_output_limit_ = 0;
+    loop_start_skip_pending_ = false;
   }
 
   // Compute where to go next.
@@ -930,29 +945,44 @@ void XmaContextNew::PreparePacket(const uint32_t frame_size,
   xma_frame_[0] = ((frame_padding & 7) << 5) | ((padding_end & 7) << 2);
 }
 
-bool XmaContextNew::DecodePacket(AVCodecContext* av_context,
-                                 const AVPacket* av_packet, AVFrame* av_frame) {
+int XmaContextNew::DecodePacket(AVCodecContext* av_context,
+                                const AVPacket* av_packet, AVFrame* av_frame) {
+  // Rate-limit error logging: streams with systematically undecodable frames
+  // (e.g. LEGO LOTR intro voice track) would otherwise flood the log with
+  // thousands of identical lines.
+  const bool log_error =
+      consecutive_decode_errors_ < 8 || (consecutive_decode_errors_ % 512) == 0;
+
   auto ret = avcodec_send_packet(av_context, av_packet);
   if (ret < 0) {
-    char errbuf[AV_ERROR_MAX_STRING_SIZE];
-    av_strerror(ret, errbuf, sizeof(errbuf));
-    XELOGE("XmaContext {}: Error sending packet for decoding: {} ({})", id(),
-           errbuf, ret);
-    return false;
+    if (log_error) {
+      char errbuf[AV_ERROR_MAX_STRING_SIZE];
+      av_strerror(ret, errbuf, sizeof(errbuf));
+      XELOGE(
+          "XmaContext {}: Error sending packet for decoding: {} ({}) "
+          "[{} consecutive errors]",
+          id(), errbuf, ret, consecutive_decode_errors_ + 1);
+    }
+    return -1;
   }
   ret = avcodec_receive_frame(av_context, av_frame);
 
   if (ret == AVERROR(EAGAIN)) {
     // Codec needs more input before producing output (e.g. first frame warmup).
-    return false;
+    return 1;
   }
   if (ret < 0) {
-    char errbuf[AV_ERROR_MAX_STRING_SIZE];
-    av_strerror(ret, errbuf, sizeof(errbuf));
-    XELOGE("XmaContext {}: Error during decoding: {} ({})", id(), errbuf, ret);
-    return false;
+    if (log_error) {
+      char errbuf[AV_ERROR_MAX_STRING_SIZE];
+      av_strerror(ret, errbuf, sizeof(errbuf));
+      XELOGE(
+          "XmaContext {}: Error during decoding: {} ({}) "
+          "[{} consecutive errors]",
+          id(), errbuf, ret, consecutive_decode_errors_ + 1);
+    }
+    return -1;
   }
-  return true;
+  return 0;
 }
 
 void XmaContextNew::StoreContextMerged(const XMA_CONTEXT_DATA& data,
