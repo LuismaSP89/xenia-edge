@@ -555,9 +555,16 @@ def fetch_data_repos():
                     print(f"  - attempt {attempt}/{max_attempts} failed: {e}, retrying...")
                     time.sleep(2 * attempt)
                 else:
-                    print_error(f"compatibility_data.json download failed after "
-                                f"{max_attempts} attempts: {e}")
-                    sys.exit(1)
+                    # The compatibility data release can disappear upstream
+                    # (it is regenerated externally); it only feeds the game
+                    # library compatibility badges, so build without it
+                    # instead of failing the whole build.
+                    print_warning(f"compatibility_data.json download failed after "
+                                  f"{max_attempts} attempts: {e}; "
+                                  "building without compatibility data")
+                    if not os.path.isfile(compat_path):
+                        with open(compat_path, "w") as f:
+                            f.write("[]\n")
 
 
 def get_cc(cc=None):
