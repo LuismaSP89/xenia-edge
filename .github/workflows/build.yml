@@ -493,7 +493,7 @@ jobs:
           SCCACHE_GHA_ENABLED: "true"
           CMAKE_C_COMPILER_LAUNCHER: sccache
           CMAKE_CXX_COMPILER_LAUNCHER: sccache
-        run: python xenia-build.py build --config=Release --target=xenia-app --target=xenia-gpu-d3d12-trace-dump --target=xenia-gpu-d3d12-trace-viewer
+        run: python xenia-build.py build --config=Release --build-misc --target=xenia-app --target=xenia-gpu-d3d12-trace-dump --target=xenia-gpu-d3d12-trace-viewer
       - name: sccache stats
         if: always()
         run: sccache --show-stats
