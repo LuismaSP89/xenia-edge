@@ -46,7 +46,6 @@ DECLARE_bool(readback_resolve_half_pixel_offset);
 DECLARE_bool(resolve_resolution_scale_fill_half_pixel_offset);
 DECLARE_bool(use_fuzzy_alpha_epsilon);
 DECLARE_bool(precise_interpolation);
-DECLARE_bool(dxbc_switch);
 DECLARE_bool(execute_unclipped_draw_vs_on_cpu);
 DECLARE_bool(execute_unclipped_draw_vs_on_cpu_for_psi_render_backend);
 DECLARE_bool(execute_unclipped_draw_vs_on_cpu_with_scissor);
@@ -310,7 +309,6 @@ void ImGuiDebugDialog::LoadCurrentSettings() {
 
   use_fuzzy_alpha_epsilon_ = cvars::use_fuzzy_alpha_epsilon;
   precise_interpolation_ = cvars::precise_interpolation;
-  dxbc_switch_ = cvars::dxbc_switch;
 
   execute_unclipped_draw_vs_on_cpu_ = cvars::execute_unclipped_draw_vs_on_cpu;
   execute_unclipped_draw_vs_on_cpu_for_psi_render_backend_ =
@@ -647,7 +645,6 @@ void ImGuiDebugDialog::OnDraw(ImGuiIO& io) {
   bool show_shader = AnyMatchesFilter({
       "use_fuzzy_alpha_epsilon",
       "precise_interpolation",
-      "dxbc_switch",
   });
   bool show_edram = AnyMatchesFilter({
       "execute_unclipped_draw_vs_on_cpu",
@@ -950,18 +947,6 @@ void ImGuiDebugDialog::OnDraw(ImGuiIO& io) {
               ApplyBoolSetting("GPU", "precise_interpolation",
                                precise_interpolation_, true);
             }
-          }
-
-          if (MatchesFilter("dxbc_switch")) {
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            ImGui::BeginDisabled(!backend_state.d3d12);
-            DrawLabelCell("dxbc_switch", "[D3D12]");
-            ImGui::TableSetColumnIndex(1);
-            if (RightAlignedCheckbox("##dxbc_switch", &dxbc_switch_)) {
-              ApplyBoolSetting("GPU.Debug", "dxbc_switch", dxbc_switch_, true);
-            }
-            ImGui::EndDisabled();
           }
 
           ImGui::EndTable();

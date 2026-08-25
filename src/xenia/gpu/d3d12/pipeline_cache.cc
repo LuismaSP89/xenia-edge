@@ -42,14 +42,6 @@
 
 #include "third_party/fmt/include/fmt/xchar.h"
 
-DEFINE_bool(d3d12_dxbc_disasm, false,
-            "Disassemble DXBC shaders after generation.", "D3D12");
-DEFINE_bool(
-    d3d12_dxbc_disasm_dxilconv, false,
-    "Disassemble DXBC shaders after conversion to DXIL, if DXIL shaders are "
-    "supported by the OS, and DirectX Shader Compiler DLLs available at "
-    "https://github.com/microsoft/DirectXShaderCompiler/releases are present.",
-    "D3D12");
 DEFINE_int32(
     d3d12_pipeline_creation_threads, -1,
     "Number of threads used for graphics pipeline creation. -1 to calculate "

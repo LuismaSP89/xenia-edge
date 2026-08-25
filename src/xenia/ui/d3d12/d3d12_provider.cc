@@ -178,12 +178,6 @@ D3D12Provider::~D3D12Provider() {
   if (library_dxil_ != nullptr) {
     FreeLibrary(library_dxil_);
   }
-  if (library_dxilconv_ != nullptr) {
-    FreeLibrary(library_dxilconv_);
-  }
-  if (library_d3dcompiler_ != nullptr) {
-    FreeLibrary(library_d3dcompiler_);
-  }
   if (library_d3d12_ != nullptr) {
     FreeLibrary(library_d3d12_);
   }
@@ -240,40 +234,6 @@ bool D3D12Provider::Initialize() {
   if (!libraries_loaded) {
     XELOGE("Failed to get DXGI or Direct3D 12 functions");
     return false;
-  }
-
-  // Load optional D3DCompiler_47.dll.
-  pfn_d3d_disassemble_ = nullptr;
-  library_d3dcompiler_ = LoadLibraryW(L"D3DCompiler_47.dll");
-  if (library_d3dcompiler_) {
-    pfn_d3d_disassemble_ =
-        pD3DDisassemble(GetProcAddress(library_d3dcompiler_, "D3DDisassemble"));
-    if (pfn_d3d_disassemble_ == nullptr) {
-      XELOGD(
-          "Failed to get D3DDisassemble from D3DCompiler_47.dll, DXBC "
-          "disassembly for debugging will be unavailable");
-    }
-  } else {
-    XELOGD(
-        "Failed to load D3DCompiler_47.dll, DXBC disassembly for debugging "
-        "will be unavailable");
-  }
-
-  // Load optional dxilconv.dll.
-  pfn_dxilconv_dxc_create_instance_ = nullptr;
-  library_dxilconv_ = LoadLibraryW(L"dxilconv.dll");
-  if (library_dxilconv_) {
-    pfn_dxilconv_dxc_create_instance_ = DxcCreateInstanceProc(
-        GetProcAddress(library_dxilconv_, "DxcCreateInstance"));
-    if (pfn_dxilconv_dxc_create_instance_ == nullptr) {
-      XELOGD(
-          "Failed to get DxcCreateInstance from dxilconv.dll, converted DXIL "
-          "disassembly for debugging will be unavailable");
-    }
-  } else {
-    XELOGD(
-        "Failed to load dxilconv.dll, converted DXIL disassembly for debugging "
-        "will be unavailable - DXIL may be unsupported by your OS version");
   }
 
   // Load the required DXIL shader compiler runtime (dxcompiler.dll + dxil.dll)

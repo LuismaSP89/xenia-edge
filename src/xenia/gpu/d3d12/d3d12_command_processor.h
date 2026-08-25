@@ -34,8 +34,6 @@
 #include "xenia/gpu/d3d12/deferred_command_list.h"
 #include "xenia/gpu/d3d12/pipeline_cache.h"
 #include "xenia/gpu/draw_util.h"
-#include "xenia/gpu/dxbc_shader.h"
-#include "xenia/gpu/dxbc_shader_translator.h"
 #include "xenia/gpu/registers.h"
 #include "xenia/gpu/xenos.h"
 #include "xenia/kernel/kernel_state.h"
@@ -389,68 +387,13 @@ class D3D12CommandProcessor final : public CommandProcessor {
  private:
   static constexpr uint32_t kQueueFrames = 3;
 
-  enum RootParameter : UINT {
-    // Keep the size of the root signature at each stage 13 dwords or less
-    // (better 12 or less) so it fits in user data on AMD. Descriptor tables are
-    // 1 dword, root descriptors are 2 dwords (however, root descriptors require
-    // less setup on the CPU - balance needs to be maintained).
-
-    // CBVs are set in both bindful and bindless cases via root descriptors.
-
-    // - Bindful resources - multiple root signatures depending on extra
-    //   parameters.
-
-    // These are always present.
-
-    // Very frequently changed, especially for UI draws, and for models drawn in
-    // multiple parts - contains vertex and texture fetch constants.
-    kRootParameter_Bindful_FetchConstants = 0,  // +2 dwords = 2 in all.
-    // Quite frequently changed (for one object drawn multiple times, for
-    // instance - may contain projection matrices).
-    kRootParameter_Bindful_FloatConstantsVertex,  // +2 = 4 in VS.
-    // Less frequently changed (per-material).
-    kRootParameter_Bindful_FloatConstantsPixel,  // +2 = 4 in PS.
-    // May stay the same across many draws.
-    kRootParameter_Bindful_SystemConstants,  // +2 = 6 in all.
-    // Pretty rarely used and rarely changed - flow control constants.
-    kRootParameter_Bindful_BoolLoopConstants,  // +2 = 8 in all.
-    // Changed only when starting a new descriptor heap or when switching
-    // between shared memory as SRV and UAV - shared memory byte address buffer
-    // (as SRV and as UAV, either may be null if not used), and, if ROV is used
-    // for EDRAM, EDRAM R32_UINT UAV.
-    kRootParameter_Bindful_SharedMemoryAndEdram,  // +1 = 9 in all.
-
-    kRootParameter_Bindful_Count_Base,
-
-    // Extra parameter that may or may not exist:
-    // - Pixel textures (+1 = 10 in PS).
-    // - Pixel samplers (+1 = 11 in PS).
-    // - Vertex textures (+1 = 10 in VS).
-    // - Vertex samplers (+1 = 11 in VS).
-
-    kRootParameter_Bindful_Count_Max = kRootParameter_Bindful_Count_Base + 4,
-
-    // - Bindless resources - two global root signatures (for non-tessellated
-    //   and tessellated drawing), so these are always present.
-
-    kRootParameter_Bindless_FetchConstants = 0,    // +2 = 2 in all.
-    kRootParameter_Bindless_FloatConstantsVertex,  // +2 = 4 in VS.
-    kRootParameter_Bindless_FloatConstantsPixel,   // +2 = 4 in PS.
-    // Changed per-material, texture and sampler descriptor indices.
-    kRootParameter_Bindless_DescriptorIndicesPixel,   // +2 = 6 in PS.
-    kRootParameter_Bindless_DescriptorIndicesVertex,  // +2 = 6 in VS.
-    kRootParameter_Bindless_SystemConstants,          // +2 = 8 in all.
-    kRootParameter_Bindless_BoolLoopConstants,        // +2 = 10 in all.
-    // Changed only when switching between shared memory as SRV and UAV - shared
-    // memory byte address buffer (as SRV and as UAV, either may be null if not
-    // used).
-    kRootParameter_Bindless_SharedMemory,  // +1 = 11 in all.
-    // Unbounded sampler descriptor table - changed in case of overflow.
-    kRootParameter_Bindless_SamplerHeap,  // +1 = 12 in all.
-    // Unbounded SRV/UAV descriptor table - never changed.
-    kRootParameter_Bindless_ViewHeap,  // +1 = 13 in all.
-
-    kRootParameter_Bindless_Count,
+  // Shader registers of SpirvShaderTranslator's
+  // kDescriptorSetSharedMemoryAndEdram bindings, which Mesa maps one-to-one to
+  // registers of space 0.
+  enum : UINT {
+    kMesaRegister_SharedMemory = 0,
+    kMesaRegister_Edram = 1,
+    kMesaRegister_ZpdRovCounter = 2,
   };
 
   // Root parameters for the spirv_to_dxil guest path (texture-less milestone).
@@ -726,8 +669,6 @@ class D3D12CommandProcessor final : public CommandProcessor {
 
   // Root signatures for different descriptor counts.
   std::unordered_map<uint32_t, ID3D12RootSignature*> root_signatures_bindful_;
-  ID3D12RootSignature* root_signature_bindless_vs_ = nullptr;
-  ID3D12RootSignature* root_signature_bindless_ds_ = nullptr;
   ID3D12RootSignature* root_signature_mesa_ = nullptr;
 
   std::unique_ptr<D3D12PrimitiveProcessor> primitive_processor_;

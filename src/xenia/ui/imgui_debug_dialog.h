@@ -95,7 +95,6 @@ class ImGuiDebugDialog : public ImGuiGamepadDialog {
   // Shader / Driver Workarounds
   bool use_fuzzy_alpha_epsilon_;
   bool precise_interpolation_;
-  bool dxbc_switch_;
   // EDRAM / Draw Heuristics
   bool execute_unclipped_draw_vs_on_cpu_;
   bool execute_unclipped_draw_vs_on_cpu_for_psi_render_backend_;

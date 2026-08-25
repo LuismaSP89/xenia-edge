@@ -696,7 +696,7 @@ void D3D12TextureCache::RequestTextures(uint32_t used_texture_mask) {
 // chrispy: optimize this further
 bool D3D12TextureCache::AreActiveTextureSRVKeysUpToDate(
     const TextureSRVKey* keys,
-    const DxbcShader::TextureBinding* host_shader_bindings,
+    const SpirvShader::TextureBinding* host_shader_bindings,
     size_t host_shader_binding_count) const {
   for (size_t i = 0; i < host_shader_binding_count; ++i) {
     if (i + 8 < host_shader_binding_count) {
@@ -722,7 +722,8 @@ bool D3D12TextureCache::AreActiveTextureSRVKeysUpToDate(
 }
 
 void D3D12TextureCache::WriteActiveTextureSRVKeys(
-    TextureSRVKey* keys, const DxbcShader::TextureBinding* host_shader_bindings,
+    TextureSRVKey* keys,
+    const SpirvShader::TextureBinding* host_shader_bindings,
     size_t host_shader_binding_count) const {
   for (size_t i = 0; i < host_shader_binding_count; ++i) {
     TextureSRVKey& key = keys[i];
@@ -741,7 +742,7 @@ void D3D12TextureCache::WriteActiveTextureSRVKeys(
 }
 
 void D3D12TextureCache::WriteActiveTextureBindfulSRV(
-    const DxbcShader::TextureBinding& host_shader_binding,
+    const SpirvShader::TextureBinding& host_shader_binding,
     D3D12_CPU_DESCRIPTOR_HANDLE handle) {
   assert_false(bindless_resources_used_);
   uint32_t descriptor_index = UINT32_MAX;
@@ -827,7 +828,7 @@ void D3D12TextureCache::WriteActiveTextureBindfulSRV(
 }
 
 uint32_t D3D12TextureCache::GetActiveTextureBindlessSRVIndex(
-    const DxbcShader::TextureBinding& host_shader_binding) {
+    const SpirvShader::TextureBinding& host_shader_binding) {
   assert_true(bindless_resources_used_);
   uint32_t descriptor_index = UINT32_MAX;
   uint32_t fetch_constant_index = host_shader_binding.fetch_constant;
@@ -896,12 +897,12 @@ uint32_t D3D12TextureCache::GetActiveTextureBindlessSRVIndex(
   return descriptor_index;
 }
 void D3D12TextureCache::PrefetchSamplerParameters(
-    const DxbcShader::SamplerBinding& binding) const {
+    const SpirvShader::SamplerBinding& binding) const {
   swcache::PrefetchL1(&register_file()[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 +
                                        binding.fetch_constant * 6]);
 }
 D3D12TextureCache::SamplerParameters D3D12TextureCache::GetSamplerParameters(
-    const DxbcShader::SamplerBinding& binding) const {
+    const SpirvShader::SamplerBinding& binding) const {
   const auto& regs = register_file();
   xenos::xe_gpu_texture_fetch_t fetch =
       regs.GetTextureFetch(binding.fetch_constant);

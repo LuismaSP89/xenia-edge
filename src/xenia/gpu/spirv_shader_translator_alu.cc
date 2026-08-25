@@ -1131,7 +1131,7 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
       if (instr.scalar_opcode == ucode::AluScalarOpcode::kMaxAs ||
           instr.scalar_opcode == ucode::AluScalarOpcode::kMaxAsf) {
         // Scalar maxas/maxasf clamp a0 to [0, 255] (non-negative), unlike the
-        // vector maxa which allows [-256, 255]. Matches DxbcShaderTranslator.
+        // vector maxa which allows [-256, 255].
         // maxas: a0 = (int)clamp(floor(src0.a + 0.5), 0.0, 255.0)
         // maxasf: a0 = (int)clamp(floor(src0.a), 0.0, 255.0)
         spv::Id maxa_address;

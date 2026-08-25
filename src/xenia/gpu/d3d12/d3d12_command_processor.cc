@@ -649,11 +649,9 @@ bool D3D12CommandProcessor::SetupContext() {
   resolve_read_callback_ = memory_->RegisterPhysicalMemoryReadCallback(
       ResolveReadCallbackThunk, this);
 
-  // Initialize the render target cache before configuring binding - need to
-  // know if using rasterizer-ordered views for the bindless root signature.
   render_target_cache_ = std::make_unique<D3D12RenderTargetCache>(
       *register_file_, *memory_, trace_writer_, draw_resolution_scale_x,
-      draw_resolution_scale_y, *this, bindless_resources_used_);
+      draw_resolution_scale_y, *this);
   if (!render_target_cache_->Initialize()) {
     XELOGE("Failed to initialize the render target cache");
     return false;
@@ -706,246 +704,6 @@ bool D3D12CommandProcessor::SetupContext() {
     sampler_bindful_heap_pool_ =
         std::make_unique<ui::d3d12::D3D12DescriptorHeapPool>(
             device, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, kSamplerHeapSize);
-  }
-
-  if (bindless_resources_used_) {
-    // Global bindless resource root signatures.
-    // No CBV or UAV descriptor ranges with any descriptors to be allocated
-    // dynamically (via RequestPersistentViewBindlessDescriptor or
-    // RequestOneUseSingleViewDescriptors) should be here, because they would
-    // overlap the unbounded SRV range, which is not allowed on Nvidia Fermi!
-    D3D12_ROOT_SIGNATURE_DESC root_signature_bindless_desc;
-    D3D12_ROOT_PARAMETER
-    root_parameters_bindless[kRootParameter_Bindless_Count];
-    root_signature_bindless_desc.NumParameters = kRootParameter_Bindless_Count;
-    root_signature_bindless_desc.pParameters = root_parameters_bindless;
-    root_signature_bindless_desc.NumStaticSamplers = 0;
-    root_signature_bindless_desc.pStaticSamplers = nullptr;
-    // For SM 6.6 DXIL with ResourceDescriptorHeap/SamplerDescriptorHeap.
-    root_signature_bindless_desc.Flags =
-        D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED |
-        D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
-    // Fetch constants.
-    {
-      auto& parameter =
-          root_parameters_bindless[kRootParameter_Bindless_FetchConstants];
-      parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-      parameter.Descriptor.ShaderRegister =
-          uint32_t(DxbcShaderTranslator::CbufferRegister::kFetchConstants);
-      parameter.Descriptor.RegisterSpace = 0;
-      parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    }
-    // Vertex float constants.
-    {
-      auto& parameter = root_parameters_bindless
-          [kRootParameter_Bindless_FloatConstantsVertex];
-      parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-      parameter.Descriptor.ShaderRegister =
-          uint32_t(DxbcShaderTranslator::CbufferRegister::kFloatConstants);
-      parameter.Descriptor.RegisterSpace = 0;
-      parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    }
-    // Pixel float constants.
-    {
-      auto& parameter =
-          root_parameters_bindless[kRootParameter_Bindless_FloatConstantsPixel];
-      parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-      parameter.Descriptor.ShaderRegister =
-          uint32_t(DxbcShaderTranslator::CbufferRegister::kFloatConstants);
-      parameter.Descriptor.RegisterSpace = 0;
-      parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    }
-    // Pixel shader descriptor indices.
-    {
-      auto& parameter = root_parameters_bindless
-          [kRootParameter_Bindless_DescriptorIndicesPixel];
-      parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-      parameter.Descriptor.ShaderRegister =
-          uint32_t(DxbcShaderTranslator::CbufferRegister::kDescriptorIndices);
-      parameter.Descriptor.RegisterSpace = 0;
-      parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    }
-    // Vertex shader descriptor indices.
-    {
-      auto& parameter = root_parameters_bindless
-          [kRootParameter_Bindless_DescriptorIndicesVertex];
-      parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-      parameter.Descriptor.ShaderRegister =
-          uint32_t(DxbcShaderTranslator::CbufferRegister::kDescriptorIndices);
-      parameter.Descriptor.RegisterSpace = 0;
-      parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    }
-    // System constants.
-    {
-      auto& parameter =
-          root_parameters_bindless[kRootParameter_Bindless_SystemConstants];
-      parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-      parameter.Descriptor.ShaderRegister =
-          uint32_t(DxbcShaderTranslator::CbufferRegister::kSystemConstants);
-      parameter.Descriptor.RegisterSpace = 0;
-      parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    }
-    // Bool and loop constants.
-    {
-      auto& parameter =
-          root_parameters_bindless[kRootParameter_Bindless_BoolLoopConstants];
-      parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-      parameter.Descriptor.ShaderRegister =
-          uint32_t(DxbcShaderTranslator::CbufferRegister::kBoolLoopConstants);
-      parameter.Descriptor.RegisterSpace = 0;
-      parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    }
-    // Shared memory SRV and UAV.
-    D3D12_DESCRIPTOR_RANGE root_shared_memory_view_ranges[2];
-    {
-      auto& parameter =
-          root_parameters_bindless[kRootParameter_Bindless_SharedMemory];
-      parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-      parameter.DescriptorTable.NumDescriptorRanges =
-          uint32_t(xe::countof(root_shared_memory_view_ranges));
-      parameter.DescriptorTable.pDescriptorRanges =
-          root_shared_memory_view_ranges;
-      parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-      {
-        auto& range = root_shared_memory_view_ranges[0];
-        range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        range.NumDescriptors = 1;
-        range.BaseShaderRegister =
-            UINT(DxbcShaderTranslator::SRVMainRegister::kSharedMemory);
-        range.RegisterSpace = UINT(DxbcShaderTranslator::SRVSpace::kMain);
-        range.OffsetInDescriptorsFromTableStart = 0;
-      }
-      {
-        auto& range = root_shared_memory_view_ranges[1];
-        range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-        range.NumDescriptors = 1;
-        range.BaseShaderRegister =
-            UINT(DxbcShaderTranslator::UAVRegister::kSharedMemory);
-        range.RegisterSpace = 0;
-        range.OffsetInDescriptorsFromTableStart = 1;
-      }
-    }
-    // Sampler heap.
-    D3D12_DESCRIPTOR_RANGE root_bindless_sampler_range;
-    {
-      auto& parameter =
-          root_parameters_bindless[kRootParameter_Bindless_SamplerHeap];
-      parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-      // Will be appending.
-      parameter.DescriptorTable.NumDescriptorRanges = 1;
-      parameter.DescriptorTable.pDescriptorRanges =
-          &root_bindless_sampler_range;
-      parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-      root_bindless_sampler_range.RangeType =
-          D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
-      root_bindless_sampler_range.NumDescriptors = UINT_MAX;
-      root_bindless_sampler_range.BaseShaderRegister = 0;
-      root_bindless_sampler_range.RegisterSpace = 0;
-      root_bindless_sampler_range.OffsetInDescriptorsFromTableStart = 0;
-    }
-    // View heap.
-    D3D12_DESCRIPTOR_RANGE root_bindless_view_ranges[5];
-    {
-      auto& parameter =
-          root_parameters_bindless[kRootParameter_Bindless_ViewHeap];
-      parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-      // Will be appending.
-      parameter.DescriptorTable.NumDescriptorRanges = 0;
-      parameter.DescriptorTable.pDescriptorRanges = root_bindless_view_ranges;
-      parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-      // EDRAM.
-      if (render_target_cache_->GetPath() ==
-          RenderTargetCache::Path::kPixelShaderInterlock) {
-        assert_true(parameter.DescriptorTable.NumDescriptorRanges <
-                    xe::countof(root_bindless_view_ranges));
-        auto& range = root_bindless_view_ranges[parameter.DescriptorTable
-                                                    .NumDescriptorRanges++];
-        range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-        range.NumDescriptors = 1;
-        range.BaseShaderRegister =
-            UINT(DxbcShaderTranslator::UAVRegister::kEdram);
-        range.RegisterSpace = 0;
-        range.OffsetInDescriptorsFromTableStart =
-            UINT(SystemBindlessView::kEdramR32UintUAV);
-        assert_true(parameter.DescriptorTable.NumDescriptorRanges <
-                    xe::countof(root_bindless_view_ranges));
-        auto& counter_range =
-            root_bindless_view_ranges[parameter.DescriptorTable
-                                          .NumDescriptorRanges++];
-        counter_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-        counter_range.NumDescriptors = 1;
-        counter_range.BaseShaderRegister =
-            UINT(DxbcShaderTranslator::UAVRegister::kZpdRovCounter);
-        counter_range.RegisterSpace = 0;
-        counter_range.OffsetInDescriptorsFromTableStart =
-            UINT(SystemBindlessView::kZpdROVCounterRawUAV);
-      }
-      // Used UAV and SRV ranges must not overlap on Nvidia Fermi, so textures
-      // have OffsetInDescriptorsFromTableStart after all static descriptors of
-      // other types.
-      // 2D array textures.
-      {
-        assert_true(parameter.DescriptorTable.NumDescriptorRanges <
-                    xe::countof(root_bindless_view_ranges));
-        auto& range = root_bindless_view_ranges[parameter.DescriptorTable
-                                                    .NumDescriptorRanges++];
-        range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        range.NumDescriptors = UINT_MAX;
-        range.BaseShaderRegister = 0;
-        range.RegisterSpace =
-            UINT(DxbcShaderTranslator::SRVSpace::kBindlessTextures2DArray);
-        range.OffsetInDescriptorsFromTableStart =
-            UINT(SystemBindlessView::kUnboundedSRVsStart);
-      }
-      // 3D textures.
-      {
-        assert_true(parameter.DescriptorTable.NumDescriptorRanges <
-                    xe::countof(root_bindless_view_ranges));
-        auto& range = root_bindless_view_ranges[parameter.DescriptorTable
-                                                    .NumDescriptorRanges++];
-        range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        range.NumDescriptors = UINT_MAX;
-        range.BaseShaderRegister = 0;
-        range.RegisterSpace =
-            UINT(DxbcShaderTranslator::SRVSpace::kBindlessTextures3D);
-        range.OffsetInDescriptorsFromTableStart =
-            UINT(SystemBindlessView::kUnboundedSRVsStart);
-      }
-      // Cube textures.
-      {
-        assert_true(parameter.DescriptorTable.NumDescriptorRanges <
-                    xe::countof(root_bindless_view_ranges));
-        auto& range = root_bindless_view_ranges[parameter.DescriptorTable
-                                                    .NumDescriptorRanges++];
-        range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        range.NumDescriptors = UINT_MAX;
-        range.BaseShaderRegister = 0;
-        range.RegisterSpace =
-            UINT(DxbcShaderTranslator::SRVSpace::kBindlessTexturesCube);
-        range.OffsetInDescriptorsFromTableStart =
-            UINT(SystemBindlessView::kUnboundedSRVsStart);
-      }
-    }
-    root_signature_bindless_vs_ = ui::d3d12::util::CreateRootSignature(
-        provider, root_signature_bindless_desc);
-    if (!root_signature_bindless_vs_) {
-      XELOGE(
-          "Failed to create the global root signature for bindless resources, "
-          "the version for use without tessellation");
-      return false;
-    }
-    root_parameters_bindless[kRootParameter_Bindless_FloatConstantsVertex]
-        .ShaderVisibility = D3D12_SHADER_VISIBILITY_DOMAIN;
-    root_parameters_bindless[kRootParameter_Bindless_DescriptorIndicesVertex]
-        .ShaderVisibility = D3D12_SHADER_VISIBILITY_DOMAIN;
-    root_signature_bindless_ds_ = ui::d3d12::util::CreateRootSignature(
-        provider, root_signature_bindless_desc);
-    if (!root_signature_bindless_ds_) {
-      XELOGE(
-          "Failed to create the global root signature for bindless resources, "
-          "the version for use with tessellation");
-      return false;
-    }
   }
 
   {
@@ -1019,17 +777,15 @@ bool D3D12CommandProcessor::SetupContext() {
         auto& range = mesa_shared_memory_ranges[0];
         range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
         range.NumDescriptors = 1;
-        range.BaseShaderRegister =
-            UINT(DxbcShaderTranslator::SRVMainRegister::kSharedMemory);
-        range.RegisterSpace = UINT(DxbcShaderTranslator::SRVSpace::kMain);
+        range.BaseShaderRegister = kMesaRegister_SharedMemory;
+        range.RegisterSpace = 0;
         range.OffsetInDescriptorsFromTableStart = 0;
       }
       {
         auto& range = mesa_shared_memory_ranges[1];
         range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
         range.NumDescriptors = 1;
-        range.BaseShaderRegister =
-            UINT(DxbcShaderTranslator::UAVRegister::kSharedMemory);
+        range.BaseShaderRegister = kMesaRegister_SharedMemory;
         range.RegisterSpace = 0;
         range.OffsetInDescriptorsFromTableStart = 1;
       }
@@ -1037,14 +793,12 @@ bool D3D12CommandProcessor::SetupContext() {
     // EDRAM (u1) and ZPD FSI counter (u2) raw UAVs for the ROV path. Single
     // descriptor tables pointed into the bindless system view heap at draw time
     // (UpdateBindingsMesa), mirroring the shared memory table. The Mesa DXIL
-    // places the SPIR-V set 0 bindings 1 and 2 at u1/u2 space0, matching
-    // DxbcShaderTranslator::UAVRegister::kEdram / kZpdRovCounter.
+    // places the SPIR-V set 0 bindings 1 and 2 at u1/u2 space0.
     D3D12_DESCRIPTOR_RANGE mesa_edram_range = {};
     {
       mesa_edram_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
       mesa_edram_range.NumDescriptors = 1;
-      mesa_edram_range.BaseShaderRegister =
-          UINT(DxbcShaderTranslator::UAVRegister::kEdram);
+      mesa_edram_range.BaseShaderRegister = kMesaRegister_Edram;
       mesa_edram_range.RegisterSpace = 0;
       mesa_edram_range.OffsetInDescriptorsFromTableStart = 0;
       auto& parameter = root_parameters_mesa[kRootParameter_Mesa_Edram];
@@ -1057,8 +811,7 @@ bool D3D12CommandProcessor::SetupContext() {
     {
       mesa_zpd_counter_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
       mesa_zpd_counter_range.NumDescriptors = 1;
-      mesa_zpd_counter_range.BaseShaderRegister =
-          UINT(DxbcShaderTranslator::UAVRegister::kZpdRovCounter);
+      mesa_zpd_counter_range.BaseShaderRegister = kMesaRegister_ZpdRovCounter;
       mesa_zpd_counter_range.RegisterSpace = 0;
       mesa_zpd_counter_range.OffsetInDescriptorsFromTableStart = 0;
       auto& parameter = root_parameters_mesa[kRootParameter_Mesa_ZpdRovCounter];
@@ -1703,8 +1456,6 @@ void D3D12CommandProcessor::ShutdownContext() {
 
   // Root signatures are used by pipelines, thus freed after the pipelines.
   ui::d3d12::util::ReleaseAndNull(root_signature_mesa_);
-  ui::d3d12::util::ReleaseAndNull(root_signature_bindless_ds_);
-  ui::d3d12::util::ReleaseAndNull(root_signature_bindless_vs_);
   for (auto it : root_signatures_bindful_) {
     it.second->Release();
   }
@@ -4745,25 +4496,14 @@ bool D3D12CommandProcessor::UpdateBindingsMesa(
     }
     std::memset(mapping, 0, buffer_size);
     for (size_t i = 0; i < texture_count; ++i) {
-      const SpirvShader::TextureBinding& sb = (*spirv_textures)[i];
-      DxbcShader::TextureBinding tb = {};
-      tb.fetch_constant = sb.fetch_constant;
-      tb.dimension = sb.dimension;
-      tb.is_signed = sb.is_signed != 0;
       // ResourceDescriptorHeap is the bound view heap, so the absolute index is
       // used (no SystemBindlessView::kUnboundedSRVsStart subtraction).
-      mapping[i * 2] = texture_cache_->GetActiveTextureBindlessSRVIndex(tb);
+      mapping[i * 2] = texture_cache_->GetActiveTextureBindlessSRVIndex(
+          (*spirv_textures)[i]);
     }
     for (size_t j = 0; j < sampler_count; ++j) {
-      const SpirvShader::SamplerBinding& ss = (*spirv_samplers)[j];
-      DxbcShader::SamplerBinding sbnd = {};
-      sbnd.fetch_constant = ss.fetch_constant;
-      sbnd.mag_filter = ss.mag_filter;
-      sbnd.min_filter = ss.min_filter;
-      sbnd.mip_filter = ss.mip_filter;
-      sbnd.aniso_filter = ss.aniso_filter;
       uint32_t sampler_index = GetOrCreateMesaBindlessSamplerIndex(
-          texture_cache_->GetSamplerParameters(sbnd));
+          texture_cache_->GetSamplerParameters((*spirv_samplers)[j]));
       if (sampler_index == UINT32_MAX) {
         // Heap full. Stop and let the caller switch heaps and rebuild.
         sampler_overflow = true;
