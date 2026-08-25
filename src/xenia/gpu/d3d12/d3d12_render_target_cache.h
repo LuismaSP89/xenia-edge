@@ -425,9 +425,11 @@ class D3D12RenderTargetCache final : public RenderTargetCache {
   };
 
   // Mesa sizes the push constant CBV from the dwords the shader actually
-  // loads, rounded up to a 16-byte row, so the root constants must cover a
-  // whole row even though only the pitches and the offsets are written.
-  static constexpr uint32_t kDumpRootPushConstantDwords = 4;
+  // loads, rounded up to a 16-byte row. A direct resolve reads all of them,
+  // which is what the root constants have to cover - a plain dump reads only
+  // the pitches and the offsets and leaves the rest of the rows unread.
+  static constexpr uint32_t kDumpRootPushConstantDwords =
+      (kEdramDumpShaderPushConstantCount + 3) & ~uint32_t(3);
 
   // Root parameters of the dump compute shaders, in the register layout Mesa
   // emits for the emitter's descriptor sets: the EDRAM buffer is set 0
@@ -512,6 +514,23 @@ class D3D12RenderTargetCache final : public RenderTargetCache {
       RenderTarget* const* depth_and_color_render_targets);
 
   ID3D12PipelineState* GetOrCreateDumpPipeline(EdramDumpShaderKey key);
+
+  // Assigns temporary sort and SRV descriptor indices to the render targets of
+  // dump_rectangles_ and uploads their descriptors to a shader-visible heap.
+  // Returns false if the heap request failed, in which case nothing has been
+  // written to the command list yet.
+  bool PrepareDumpSourceDescriptors();
+
+  // Reads the render targets owning the resolve source straight into shared
+  // memory in the guest texture layout, doing in one pass what dumping to the
+  // EDRAM buffer and copying back out of it do in two. Returns false without
+  // encoding anything if the resolve can't be done this way, leaving the
+  // caller to take the round trip.
+  bool DirectResolveRenderTargets(
+      const draw_util::ResolveInfo& resolve_info,
+      const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
+      uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
+      uint32_t dump_pitch, D3D12SharedMemory& shared_memory);
 
   // Writes contents of host render targets within rectangles from
   // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_ - with the plain 1x1

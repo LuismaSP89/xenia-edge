@@ -1209,11 +1209,11 @@ bool D3D12RenderTargetCache::Resolve(const Memory& memory,
     // If everything owning the source is native, copy at 1x1 into shared
     // memory.
     bool copy_native = false;
+    uint32_t dump_base = 0;
+    uint32_t dump_row_length_used = 0;
+    uint32_t dump_rows = 0;
+    uint32_t dump_pitch = 0;
     if (GetPath() == Path::kHostRenderTargets) {
-      uint32_t dump_base;
-      uint32_t dump_row_length_used;
-      uint32_t dump_rows;
-      uint32_t dump_pitch;
       resolve_info.GetCopyEdramTileSpan(dump_base, dump_row_length_used,
                                         dump_rows, dump_pitch);
       copy_native = IsResolveSourceNativeOnly(dump_base, dump_row_length_used,
@@ -1228,12 +1228,6 @@ bool D3D12RenderTargetCache::Resolve(const Memory& memory,
           return false;
         }
       }
-      // Dump the current contents of the render targets owning the affected
-      // range to edram_buffer_.
-      // TODO(Triang3l): Direct host render target -> shared memory resolve
-      // shaders for non-converting cases.
-      DumpRenderTargets(dump_base, dump_row_length_used, dump_rows, dump_pitch,
-                        copy_native);
     }
     bool copy_dest_scaled = draw_resolution_scaled && !copy_native;
 
@@ -1244,7 +1238,41 @@ bool D3D12RenderTargetCache::Resolve(const Memory& memory,
         copy_native ? 1 : draw_resolution_scale_y(), copy_shader_constants,
         copy_group_count_x, copy_group_count_y);
     assert_true(copy_group_count_x && copy_group_count_y);
-    if (copy_shader != draw_util::ResolveCopyShaderIndex::kUnknown) {
+
+    bool resolved_directly = false;
+    if (GetPath() == Path::kHostRenderTargets) {
+      // Read the render targets straight into shared memory where the copy
+      // wouldn't have converted anything, otherwise dump the current contents
+      // of the ones owning the affected range to edram_buffer_ for it.
+      if (cvars::direct_host_resolve &&
+          GetDirectResolveEligibility(resolve_info, copy_shader) ==
+              DirectResolveEligibility::kEligible) {
+        resolved_directly = DirectResolveRenderTargets(
+            resolve_info, copy_shader_constants, dump_base,
+            dump_row_length_used, dump_rows, dump_pitch, shared_memory);
+      }
+      if (!resolved_directly) {
+        DumpRenderTargets(dump_base, dump_row_length_used, dump_rows,
+                          dump_pitch, copy_native);
+      }
+    }
+
+    if (resolved_directly) {
+      // Invalidate textures - the direct shaders never write the scaled
+      // destination layout, so the range is always unscaled.
+      texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
+                                        resolve_info.copy_dest_extent_length,
+                                        false);
+      written_address_out = resolve_info.copy_dest_extent_start;
+      written_length_out = resolve_info.copy_dest_extent_length;
+      if (copy_dest_info_out) {
+        *copy_dest_info_out = resolve_info.copy_dest_info;
+      }
+      if (written_scaled_out) {
+        *written_scaled_out = false;
+      }
+      copied = true;
+    } else if (copy_shader != draw_util::ResolveCopyShaderIndex::kUnknown) {
       const draw_util::ResolveCopyShaderInfo& copy_shader_info =
           draw_util::resolve_copy_shader_info[size_t(copy_shader)];
 
@@ -3427,6 +3455,288 @@ ID3D12PipelineState* D3D12RenderTargetCache::GetOrCreateDumpPipeline(
   return pipeline;
 }
 
+bool D3D12RenderTargetCache::PrepareDumpSourceDescriptors() {
+  // Clear previously set temporary indices.
+  for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {
+    auto& d3d12_rt = *static_cast<D3D12RenderTarget*>(rectangle.render_target);
+    d3d12_rt.SetTemporarySortIndex(UINT32_MAX);
+    d3d12_rt.SetTemporarySRVDescriptorIndex(UINT32_MAX);
+    d3d12_rt.SetTemporarySRVDescriptorIndexStencil(UINT32_MAX);
+  }
+  current_temporary_descriptors_cpu_.clear();
+  uint32_t rt_sort_index = 0;
+  for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {
+    auto& d3d12_rt = *static_cast<D3D12RenderTarget*>(rectangle.render_target);
+    if (d3d12_rt.temporary_sort_index() == UINT32_MAX) {
+      d3d12_rt.SetTemporarySortIndex(rt_sort_index++);
+    }
+    if (d3d12_rt.temporary_srv_descriptor_index() == UINT32_MAX) {
+      d3d12_rt.SetTemporarySRVDescriptorIndex(
+          uint32_t(current_temporary_descriptors_cpu_.size()));
+      current_temporary_descriptors_cpu_.push_back(
+          d3d12_rt.descriptor_srv().GetHandle());
+    }
+    if (d3d12_rt.key().is_depth &&
+        d3d12_rt.temporary_srv_descriptor_index_stencil() == UINT32_MAX) {
+      d3d12_rt.SetTemporarySRVDescriptorIndexStencil(
+          uint32_t(current_temporary_descriptors_cpu_.size()));
+      current_temporary_descriptors_cpu_.push_back(
+          d3d12_rt.descriptor_srv_stencil().GetHandle());
+    }
+  }
+
+  // Copy source descriptors to a shader-visible heap.
+  uint32_t descriptor_count =
+      uint32_t(current_temporary_descriptors_cpu_.size());
+  current_temporary_descriptors_gpu_.resize(descriptor_count);
+  if (!command_processor_.RequestOneUseSingleViewDescriptors(
+          descriptor_count, current_temporary_descriptors_gpu_.data())) {
+    return false;
+  }
+  ID3D12Device* device = command_processor_.GetD3D12Provider().GetDevice();
+  for (uint32_t i = 0; i < descriptor_count; ++i) {
+    device->CopyDescriptorsSimple(1,
+                                  current_temporary_descriptors_gpu_[i].first,
+                                  current_temporary_descriptors_cpu_[i],
+                                  D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  }
+  return true;
+}
+
+bool D3D12RenderTargetCache::DirectResolveRenderTargets(
+    const draw_util::ResolveInfo& resolve_info,
+    const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
+    uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
+    uint32_t dump_pitch, D3D12SharedMemory& shared_memory) {
+  assert_true(GetPath() == Path::kHostRenderTargets);
+
+  GetResolveCopyRectanglesToDump(dump_base, dump_row_length_used, dump_rows,
+                                 dump_pitch, dump_rectangles_);
+  if (dump_rectangles_.empty()) {
+    return false;
+  }
+
+  // Everything that can fail has to be settled before the first dispatch is
+  // encoded - falling back after that would resolve part of the range twice.
+  dump_invocations_.clear();
+  dump_invocations_.reserve(dump_rectangles_.size());
+  for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {
+    RenderTargetKey rt_key =
+        static_cast<D3D12RenderTarget*>(rectangle.render_target)->key();
+    EdramDumpShaderKey pipeline_key;
+    pipeline_key.msaa_samples = rt_key.msaa_samples;
+    pipeline_key.resource_format = rt_key.resource_format;
+    pipeline_key.is_depth = rt_key.is_depth;
+    pipeline_key.source_scale_native = rt_key.scale_native;
+    pipeline_key.direct_resolve = 1;
+    if (!GetOrCreateDumpPipeline(pipeline_key)) {
+      return false;
+    }
+    dump_invocations_.emplace_back(rectangle, pipeline_key);
+  }
+
+  if (!shared_memory.RequestRange(resolve_info.copy_dest_extent_start,
+                                  resolve_info.copy_dest_extent_length)) {
+    XELOGE(
+        "D3D12RenderTargetCache: Failed to obtain the direct resolve "
+        "destination memory region");
+    return false;
+  }
+
+  if (!PrepareDumpSourceDescriptors()) {
+    return false;
+  }
+
+  // Committed to the direct path from here on.
+  command_processor_.PushDebugMarker(
+      "DirectResolveRenderTargets (Shared Memory Write): base tile %u",
+      dump_base);
+
+  shared_memory.UseForWriting();
+  for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {
+    auto& d3d12_rt = *static_cast<D3D12RenderTarget*>(rectangle.render_target);
+    command_processor_.PushTransitionBarrier(
+        d3d12_rt.resource(),
+        d3d12_rt.SetResourceState(
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+  }
+
+  // Sort the invocations to reduce context and binding switches.
+  std::sort(dump_invocations_.begin(), dump_invocations_.end());
+
+  // One destination and one rectangle for the whole resolve.
+  uint32_t resolve_constants[kEdramDumpShaderPushConstantCount] = {};
+  resolve_constants[kEdramDumpShaderPushConstantResolveEdramInfo] =
+      copy_shader_constants.dest_relative.edram_info.packed;
+  resolve_constants[kEdramDumpShaderPushConstantResolveCoordinateInfo] =
+      copy_shader_constants.dest_relative.coordinate_info.packed;
+  resolve_constants[kEdramDumpShaderPushConstantResolveDestInfo] =
+      copy_shader_constants.dest_relative.dest_info.value;
+  resolve_constants[kEdramDumpShaderPushConstantResolveDestCoordinateInfo] =
+      copy_shader_constants.dest_relative.dest_coordinate_info.packed;
+  resolve_constants[kEdramDumpShaderPushConstantResolveDestBase] =
+      copy_shader_constants.dest_base;
+  resolve_constants[kEdramDumpShaderPushConstantResolveHeightDiv8] =
+      resolve_info.height_div_8;
+
+  DeferredCommandList& command_list =
+      command_processor_.GetDeferredCommandList();
+  ID3D12RootSignature* last_root_signature = nullptr;
+  // `root_parameters_set` doesn't include the destination, which is never
+  // changed.
+  uint32_t root_parameters_set = 0;
+  uint32_t last_descriptor_index_source = UINT32_MAX;
+  uint32_t last_descriptor_index_stencil = UINT32_MAX;
+  bool pitches_set = false;
+  bool resolve_constants_set = false;
+  EdramDumpShaderPitches last_pitches;
+  for (const DumpInvocation& invocation : dump_invocations_) {
+    const ResolveCopyDumpRectangle& rectangle = invocation.rectangle;
+    auto& d3d12_rt = *static_cast<D3D12RenderTarget*>(rectangle.render_target);
+    RenderTargetKey rt_key = d3d12_rt.key();
+    EdramDumpShaderKey pipeline_key = invocation.pipeline_key;
+    ID3D12PipelineState* pipeline = GetOrCreateDumpPipeline(pipeline_key);
+    assert_not_null(pipeline);
+    command_processor_.SetExternalPipeline(pipeline);
+
+    ID3D12RootSignature* root_signature = pipeline_key.is_depth
+                                              ? dump_root_signature_depth_
+                                              : dump_root_signature_color_;
+    if (last_root_signature != root_signature) {
+      last_root_signature = root_signature;
+      command_list.D3DSetComputeRootSignature(root_signature);
+      root_parameters_set = 0;
+      pitches_set = false;
+      resolve_constants_set = false;
+      // The whole buffer is bound, which is what lets the destination base
+      // stay the absolute byte offset the shader adds to the tiled address.
+      command_list.D3DSetComputeRootUnorderedAccessView(
+          pipeline_key.is_depth ? kDumpRootParameterDepthEdram
+                                : kDumpRootParameterColorEdram,
+          shared_memory.GetGPUAddress());
+    }
+
+    if (!resolve_constants_set) {
+      resolve_constants_set = true;
+      command_list.D3DSetComputeRoot32BitConstants(
+          kDumpRootParameterPushConstants,
+          kEdramDumpShaderPushConstantCount -
+              kEdramDumpShaderPushConstantResolveEdramInfo,
+          &resolve_constants[kEdramDumpShaderPushConstantResolveEdramInfo],
+          kEdramDumpShaderPushConstantResolveEdramInfo);
+    }
+
+    EdramDumpShaderPitches pitches;
+    pitches.dest_pitch = dump_pitch;
+    pitches.source_pitch = rt_key.GetPitchTiles();
+    if (last_pitches != pitches) {
+      last_pitches = pitches;
+      pitches_set = false;
+    }
+    if (!pitches_set) {
+      pitches_set = true;
+      command_list.D3DSetComputeRoot32BitConstants(
+          kDumpRootParameterPushConstants,
+          sizeof(last_pitches) / sizeof(uint32_t), &last_pitches,
+          kEdramDumpShaderPushConstantPitches);
+    }
+
+    if (pipeline_key.is_depth) {
+      constexpr uint32_t kDumpRootParameterDepthStencilBit =
+          uint32_t(1) << kDumpRootParameterDepthStencil;
+      uint32_t descriptor_index_stencil =
+          d3d12_rt.temporary_srv_descriptor_index_stencil();
+      assert_true(descriptor_index_stencil != UINT32_MAX);
+      if (last_descriptor_index_stencil != descriptor_index_stencil) {
+        last_descriptor_index_stencil = descriptor_index_stencil;
+        root_parameters_set &= ~kDumpRootParameterDepthStencilBit;
+      }
+      if (!(root_parameters_set & kDumpRootParameterDepthStencilBit)) {
+        command_list.D3DSetComputeRootDescriptorTable(
+            kDumpRootParameterDepthStencil,
+            current_temporary_descriptors_gpu_[last_descriptor_index_stencil]
+                .second);
+        root_parameters_set |= kDumpRootParameterDepthStencilBit;
+      }
+    }
+
+    constexpr uint32_t kDumpRootParameterSourceBit =
+        uint32_t(1) << kDumpRootParameterSource;
+    uint32_t descriptor_index_source =
+        d3d12_rt.temporary_srv_descriptor_index();
+    assert_true(descriptor_index_source != UINT32_MAX);
+    if (last_descriptor_index_source != descriptor_index_source) {
+      last_descriptor_index_source = descriptor_index_source;
+      root_parameters_set &= ~kDumpRootParameterSourceBit;
+    }
+    if (!(root_parameters_set & kDumpRootParameterSourceBit)) {
+      command_list.D3DSetComputeRootDescriptorTable(
+          kDumpRootParameterSource,
+          current_temporary_descriptors_gpu_[last_descriptor_index_source]
+              .second);
+      root_parameters_set |= kDumpRootParameterSourceBit;
+    }
+
+    // A direct resolve dispatches over destination pixels rather than EDRAM
+    // samples, so the runs of pixels the guest layout stores contiguously line
+    // up with whole stores. Tiles cover this many of them.
+    bool format_is_64bpp = rt_key.Is64bpp();
+    uint32_t tile_pixels_x =
+        (xenos::kEdramTileWidthSamples >> uint32_t(format_is_64bpp)) >>
+        uint32_t(rt_key.msaa_samples >= xenos::MsaaSamples::k4X);
+    uint32_t tile_pixels_y =
+        xenos::kEdramTileHeightSamples >>
+        uint32_t(rt_key.msaa_samples >= xenos::MsaaSamples::k2X);
+    uint32_t pixels_per_thread =
+        GetEdramDumpShaderResolvePixelsPerThread(format_is_64bpp);
+
+    EdramDumpShaderOffsets offsets;
+    offsets.source_base_tiles = rt_key.base_tiles;
+    ResolveCopyDumpRectangle::Dispatch
+        dispatches[ResolveCopyDumpRectangle::kMaxDispatches];
+    uint32_t dispatch_count =
+        rectangle.GetDispatches(dump_pitch, dump_row_length_used, dispatches);
+    for (uint32_t i = 0; i < dispatch_count; ++i) {
+      const ResolveCopyDumpRectangle::Dispatch& dispatch = dispatches[i];
+      offsets.dispatch_first_tile = dump_base + dispatch.offset;
+      command_list.D3DSetComputeRoot32BitConstants(
+          kDumpRootParameterPushConstants, sizeof(offsets) / sizeof(uint32_t),
+          &offsets, kEdramDumpShaderPushConstantOffsets);
+
+      // Where this dispatch starts in the resolve's tile grid, which the
+      // threads place themselves against.
+      uint32_t dispatch_tile_relative =
+          offsets.dispatch_first_tile -
+          copy_shader_constants.dest_relative.edram_info.base_tiles;
+      EdramDumpShaderResolveDispatchTile dispatch_tile;
+      dispatch_tile.tile_x = dispatch_tile_relative % dump_pitch;
+      dispatch_tile.tile_y = dispatch_tile_relative / dump_pitch;
+      command_list.D3DSetComputeRoot32BitConstants(
+          kDumpRootParameterPushConstants,
+          sizeof(dispatch_tile) / sizeof(uint32_t), &dispatch_tile,
+          kEdramDumpShaderPushConstantResolveDispatchTile);
+
+      command_processor_.SubmitBarriers();
+      uint32_t threads_x =
+          (dispatch.width_tiles * tile_pixels_x + (pixels_per_thread - 1)) /
+          pixels_per_thread;
+      command_list.D3DDispatch(
+          (threads_x + (kEdramDumpShaderResolveThreadsPerGroupX - 1)) /
+              kEdramDumpShaderResolveThreadsPerGroupX,
+          (dispatch.height_tiles * tile_pixels_y +
+           (kEdramDumpShaderResolveThreadsPerGroupY - 1)) /
+              kEdramDumpShaderResolveThreadsPerGroupY,
+          1);
+    }
+  }
+
+  shared_memory.MarkUAVWritesCommitNeeded();
+
+  command_processor_.PopDebugMarker();
+  return true;
+}
+
 void D3D12RenderTargetCache::DumpRenderTargets(uint32_t dump_base,
                                                uint32_t dump_row_length_used,
                                                uint32_t dump_rows,
@@ -3443,21 +3753,14 @@ void D3D12RenderTargetCache::DumpRenderTargets(uint32_t dump_base,
   command_processor_.PushDebugMarker(
       "DumpRenderTargets (EDRAM Write): base tile %u", dump_base);
 
-  // Clear previously set temporary indices.
-  for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {
-    auto& d3d12_rt = *static_cast<D3D12RenderTarget*>(rectangle.render_target);
-    d3d12_rt.SetTemporarySortIndex(UINT32_MAX);
-    d3d12_rt.SetTemporarySRVDescriptorIndex(UINT32_MAX);
-    d3d12_rt.SetTemporarySRVDescriptorIndexStencil(UINT32_MAX);
+  if (!PrepareDumpSourceDescriptors()) {
+    command_processor_.PopDebugMarker();
+    return;
   }
-  // Gather all needed barriers and info needed to create descriptors and to
-  // sort the invocations.
+
   TransitionEdramBuffer(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   dump_invocations_.clear();
   dump_invocations_.reserve(dump_rectangles_.size());
-  current_temporary_descriptors_cpu_.clear();
-  bool any_sources_32bpp_64bpp[2] = {};
-  uint32_t rt_sort_index = 0;
   for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {
     auto& d3d12_rt = *static_cast<D3D12RenderTarget*>(rectangle.render_target);
     command_processor_.PushTransitionBarrier(
@@ -3465,24 +3768,7 @@ void D3D12RenderTargetCache::DumpRenderTargets(uint32_t dump_base,
         d3d12_rt.SetResourceState(
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    if (d3d12_rt.temporary_sort_index() == UINT32_MAX) {
-      d3d12_rt.SetTemporarySortIndex(rt_sort_index++);
-    }
-    if (d3d12_rt.temporary_srv_descriptor_index() == UINT32_MAX) {
-      d3d12_rt.SetTemporarySRVDescriptorIndex(
-          uint32_t(current_temporary_descriptors_cpu_.size()));
-      current_temporary_descriptors_cpu_.push_back(
-          d3d12_rt.descriptor_srv().GetHandle());
-    }
     RenderTargetKey rt_key = d3d12_rt.key();
-    if (rt_key.is_depth &&
-        d3d12_rt.temporary_srv_descriptor_index_stencil() == UINT32_MAX) {
-      d3d12_rt.SetTemporarySRVDescriptorIndexStencil(
-          uint32_t(current_temporary_descriptors_cpu_.size()));
-      current_temporary_descriptors_cpu_.push_back(
-          d3d12_rt.descriptor_srv_stencil().GetHandle());
-    }
-    any_sources_32bpp_64bpp[size_t(rt_key.Is64bpp())] = true;
     // Native layout is only for resolves with ALL native sources.
     assert_true(!native_layout || rt_key.scale_native);
     EdramDumpShaderKey pipeline_key;
@@ -3492,22 +3778,6 @@ void D3D12RenderTargetCache::DumpRenderTargets(uint32_t dump_base,
     pipeline_key.source_scale_native = rt_key.scale_native;
     pipeline_key.native_layout = uint32_t(native_layout);
     dump_invocations_.emplace_back(rectangle, pipeline_key);
-  }
-
-  // Copy source descriptors to a shader-visible heap.
-  uint32_t descriptor_count =
-      uint32_t(current_temporary_descriptors_cpu_.size());
-  current_temporary_descriptors_gpu_.resize(descriptor_count);
-  if (!command_processor_.RequestOneUseSingleViewDescriptors(
-          descriptor_count, current_temporary_descriptors_gpu_.data())) {
-    return;
-  }
-  ID3D12Device* device = command_processor_.GetD3D12Provider().GetDevice();
-  for (uint32_t i = 0; i < descriptor_count; ++i) {
-    device->CopyDescriptorsSimple(1,
-                                  current_temporary_descriptors_gpu_[i].first,
-                                  current_temporary_descriptors_cpu_[i],
-                                  D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
   }
 
   // Sort the invocations to reduce context and binding switches.
@@ -3522,7 +3792,6 @@ void D3D12RenderTargetCache::DumpRenderTargets(uint32_t dump_base,
   uint32_t root_parameters_set = 0;
   uint32_t last_descriptor_index_source = UINT32_MAX;
   uint32_t last_descriptor_index_stencil = UINT32_MAX;
-  bool last_edram_uav_is_64bpp = false;
   // The pitches and the offsets are two dwords of one root constants
   // parameter, so they're tracked apart from the descriptor tables' mask.
   bool pitches_set = false;
