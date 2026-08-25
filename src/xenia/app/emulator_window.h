@@ -220,6 +220,7 @@ class EmulatorWindow {
   void CpuBreakIntoDebugger();
   void CpuBreakIntoHostDebugger();
   void GpuTraceFrame();
+  void GpuToggleTraceStreaming();
   void GpuClearCaches();
   void ToggleDisplayConfigDialog();
   void TogglePerformanceTuningDialog();
@@ -260,6 +261,8 @@ class EmulatorWindow {
 
   std::string base_title_;
   bool initializing_shader_storage_ = false;
+  // GPU stream trace (F9) currently recording.
+  bool gpu_trace_streaming_ = false;
   // Disc number after disc swap (0 = use XEX header value)
   uint8_t swapped_disc_number_ = 0;
 

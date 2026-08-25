@@ -1594,6 +1594,9 @@ void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
     case ui::VirtualKey::kF8: {
       ToggleDebugSettingsDialog();
     } break;
+    case ui::VirtualKey::kF9: {
+      GpuToggleTraceStreaming();
+    } break;
     case ui::VirtualKey::kF11: {
       ToggleFullscreen();
     } break;
@@ -2251,6 +2254,19 @@ void EmulatorWindow::CpuBreakIntoHostDebugger() { xe::debugging::Break(); }
 
 void EmulatorWindow::GpuTraceFrame() {
   emulator()->graphics_system()->RequestFrameTrace();
+}
+
+void EmulatorWindow::GpuToggleTraceStreaming() {
+  auto graphics_system = emulator()->graphics_system();
+  if (gpu_trace_streaming_) {
+    graphics_system->EndTracing();
+    gpu_trace_streaming_ = false;
+    XELOGI("GPU stream trace stopped");
+  } else {
+    graphics_system->BeginTracing();
+    gpu_trace_streaming_ = true;
+    XELOGI("GPU stream trace started (F9 to stop)");
+  }
 }
 
 void EmulatorWindow::GpuClearCaches() {

@@ -133,21 +133,37 @@ bool TraceDump::Load(const std::filesystem::path& trace_file_path) {
 }
 
 int TraceDump::Run() {
-  BeginHostCapture();
-  player_->SeekFrame(0);
-  player_->SeekCommand(
-      static_cast<int>(player_->current_frame()->commands.size() - 1));
-  player_->WaitOnPlayback();
-  EndHostCapture();
-
-  // Capture.
+  // Dump every frame in the trace (streaming traces contain many; single
+  // frame traces keep the old single-file behavior and name).
+  const int frame_count = player_->frame_count();
   int result = 0;
-  ui::Presenter* presenter = graphics_system_->presenter();
-  ui::RawImage raw_image;
-  if (presenter && presenter->CaptureGuestOutput(raw_image)) {
-    // Save framebuffer png.
-    auto png_path = base_output_path_.replace_extension(".png");
+  BeginHostCapture();
+  for (int frame = 0; frame < frame_count; ++frame) {
+    player_->SeekFrame(frame);
+    player_->SeekCommand(
+        static_cast<int>(player_->current_frame()->commands.size() - 1));
+    player_->WaitOnPlayback();
+
+    ui::Presenter* presenter = graphics_system_->presenter();
+    ui::RawImage raw_image;
+    if (!(presenter && presenter->CaptureGuestOutput(raw_image))) {
+      XELOGE("Frame {}: failed to capture guest output", frame);
+      result = 1;
+      continue;
+    }
+    std::filesystem::path png_path = base_output_path_;
+    if (frame_count > 1) {
+      char suffix[32];
+      std::snprintf(suffix, sizeof(suffix), "_f%04d", frame);
+      png_path += suffix;
+    }
+    png_path.replace_extension(".png");
     auto handle = filesystem::OpenFile(png_path, "wb");
+    if (!handle) {
+      XELOGE("Frame {}: failed to open {} for writing", frame, png_path);
+      result = 1;
+      continue;
+    }
     auto callback = [](void* context, void* data, int size) {
       fwrite(data, 1, size, (FILE*)context);
     };
@@ -156,9 +172,8 @@ int TraceDump::Run() {
                            raw_image.data.data(),
                            static_cast<int>(raw_image.stride));
     fclose(handle);
-  } else {
-    result = 1;
   }
+  EndHostCapture();
 
   player_.reset();
   emulator_.reset();
