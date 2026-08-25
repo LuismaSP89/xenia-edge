@@ -21,11 +21,9 @@
 // function calls (even if they just immediately return) is 0.40-0.60% cpu time
 // total. with inlining they just bloat the caller and negatively impact
 // register allocation for the caller
-#ifdef NDEBUG
-#define XE_ENABLE_TRACE_WRITER_INSTRUMENTATION 0
-#else
+// Diagnostic build: trace writer instrumentation force-enabled in release
+// builds too, to capture GPU frame traces (F4) for artifact analysis.
 #define XE_ENABLE_TRACE_WRITER_INSTRUMENTATION 1
-#endif
 
 namespace xe {
 namespace gpu {
