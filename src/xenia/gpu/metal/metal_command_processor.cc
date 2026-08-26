@@ -6751,6 +6751,10 @@ void MetalCommandProcessor::UpdateSpirvSystemConstantValues(
       uint32_t swizzle_shift = 12 * (i & 1);
       consts.texture_swizzles[i >> 1] |= (texture_swizzle & 0xFFF)
                                          << swizzle_shift;
+
+      // Integer num_format scale, plus bit 24 for normalized rounding.
+      consts.texture_integer_scale_bits[i] =
+          texture_cache_->GetActiveIntegerScaleBits(i);
     }
   }
 
