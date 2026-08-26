@@ -1537,8 +1537,8 @@ msgstr "தலைப்பு %08X"
 
 
 #: src/xenia/ui/redist_installer_wx.cc:396
-msgid "dxcompiler.dll and dxil.dll not found, required for Direct3D 12 shaders. Download now (~26 MB)?"
-msgstr "dxcompiler.dll மற்றும் dxil.dll கிடைக்கவில்லை; Direct3D 12 ஷேடர்களுக்கு இவை தேவை. இப்போது பதிவிறக்கவா (~26 MB)?"
+msgid "dxil.dll not found, required for Direct3D 12 shaders. Download now (~26 MB)?"
+msgstr "dxil.dll கிடைக்கவில்லை; Direct3D 12 ஷேடர்களுக்கு இது தேவை. இப்போது பதிவிறக்கவா (~26 MB)?"
 
 #: src/xenia/ui/redist_installer_wx.cc:438
 msgid "D3D12Core.dll not found, required for Shader Model 6.6. Download now (~35 MB) and restart?"

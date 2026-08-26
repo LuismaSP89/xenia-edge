@@ -31,7 +31,6 @@
 #include "xenia/base/string_buffer.h"
 #include "xenia/base/threading.h"
 #include "xenia/gpu/d3d12/d3d12_render_target_cache.h"
-#include "xenia/gpu/d3d12/dxc_compiler.h"
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/guest_spirv_shader_cache.h"
 #include "xenia/gpu/primitive_processor.h"
@@ -470,10 +469,6 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
 
   // Temporary storage for AnalyzeUcode calls on the processor thread.
   StringBuffer ucode_disasm_buffer_;
-
-  // Kept only as an init-time presence check for dxcompiler.dll, which the Mesa
-  // DXIL signing path requires (see spirv_to_dxil_compiler).
-  std::unique_ptr<DxcCompiler> dxc_shader_compiler_;
 
   // Guest shader path: SpirvShaderTranslator output fed to Mesa spirv_to_dxil.
   // The shared cache owns the translator and the modification derivation.

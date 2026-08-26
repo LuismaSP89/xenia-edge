@@ -28,8 +28,6 @@
 // For Microsoft::WRL::ComPtr.
 #include <wrl/client.h>
 
-#include "third_party/DirectXShaderCompiler/include/dxc/dxcapi.h"
-
 #define XELOGD3D XELOGI
 
 #endif  // XENIA_UI_D3D12_D3D12_API_H_

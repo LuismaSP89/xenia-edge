@@ -172,9 +172,6 @@ D3D12Provider::~D3D12Provider() {
     }
   }
 
-  if (library_dxcompiler_ != nullptr) {
-    FreeLibrary(library_dxcompiler_);
-  }
   if (library_dxil_ != nullptr) {
     FreeLibrary(library_dxil_);
   }
@@ -236,49 +233,30 @@ bool D3D12Provider::Initialize() {
     return false;
   }
 
-  // Load the required DXIL shader compiler runtime (dxcompiler.dll + dxil.dll)
-  // from the D3D12 folder next to the executable. The D3D12 backend can't run
-  // without it, so offer to download it if it's missing.
+  // Load the required DXIL validator (dxil.dll) from the D3D12 folder next to
+  // the executable. It signs every shader Mesa emits, which D3D12 rejects
+  // unsigned, so offer to download it if it's missing.
   auto d3d12_dir = xe::filesystem::GetExecutablePath().parent_path() / "D3D12";
-  pfn_dxcompiler_dxc_create_instance_ = nullptr;
   {
     EnsureShaderCompilerRuntime(d3d12_dir);
 
-    // Pre-load dxil.dll by full path so dxcompiler's later plain-name load of
-    // it resolves here. That search skips D3D12/, so without this the DXIL
-    // would be left unsigned.
+    // Load by full path, since the signer's own plain-name load skips D3D12/.
     auto dxil_path_utf16 = xe::path_to_utf16(d3d12_dir / "dxil.dll");
     library_dxil_ =
         LoadLibraryW(reinterpret_cast<LPCWSTR>(dxil_path_utf16.c_str()));
-
-    auto dxcompiler_path_utf16 =
-        xe::path_to_utf16(d3d12_dir / "dxcompiler.dll");
-    library_dxcompiler_ =
-        LoadLibraryW(reinterpret_cast<LPCWSTR>(dxcompiler_path_utf16.c_str()));
-    if (library_dxcompiler_) {
-      XELOGI("Loaded dxcompiler.dll from the D3D12 directory");
+    if (library_dxil_) {
+      XELOGI("Loaded dxil.dll from the D3D12 directory");
     } else {
       // Fall back to the system search path (system-wide, or next to the exe).
-      library_dxcompiler_ = LoadLibraryW(L"dxcompiler.dll");
+      library_dxil_ = LoadLibraryW(L"dxil.dll");
     }
   }
-  if (library_dxcompiler_) {
-    pfn_dxcompiler_dxc_create_instance_ = DxcCreateInstanceProc(
-        GetProcAddress(library_dxcompiler_, "DxcCreateInstance"));
-    if (pfn_dxcompiler_dxc_create_instance_ == nullptr) {
-      XELOGW(
-          "Failed to get DxcCreateInstance from dxcompiler.dll, DXIL shaders "
-          "will be unavailable");
-    } else {
-      XELOGI("dxcompiler.dll loaded successfully");
-    }
-  } else {
-    DWORD error = GetLastError();
+  if (!library_dxil_) {
     XELOGW(
-        "Failed to load dxcompiler.dll (error {}), DXIL shaders will be "
-        "unavailable - download from "
+        "Failed to load dxil.dll (error {}), DXIL shaders will be unavailable "
+        "- download from "
         "https://github.com/microsoft/DirectXShaderCompiler/releases",
-        error);
+        GetLastError());
   }
 
   // The D3D12SDKVersion exports make d3d12.dll load D3D12Core.dll at the first

@@ -30,6 +30,10 @@ class SpirvToDxilCompiler {
   // Mesa git revision of the linked library.
   static uint64_t version();
 
+  // True if the DXIL signer this platform needs is available. On Windows that
+  // is DXIL.dll's validator, without which every translation fails.
+  static bool IsSignerAvailable();
+
   // Register and space of the CBV Mesa lowers SPIR-V push constants to, which
   // a root signature must supply as root constants or a CBV. Mesa sizes that
   // CBV from the bytes the shader actually loads, rounded up to a 16-byte row.

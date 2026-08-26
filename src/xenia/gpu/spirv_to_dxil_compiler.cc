@@ -282,6 +282,11 @@ bool SignDxil(std::vector<uint8_t>& dxil, const char* stage) {
 
 uint64_t SpirvToDxilCompiler::version() { return spirv_to_dxil_get_version(); }
 
+bool SpirvToDxilCompiler::IsSignerAvailable() {
+  enum dxil_validator_version validator_version;
+  return AcquireValidatorVersion(&validator_version);
+}
+
 std::vector<uint8_t> SpirvToDxilCompiler::Translate(const uint32_t* spirv_words,
                                                     size_t spirv_word_count,
                                                     Stage stage_in,
