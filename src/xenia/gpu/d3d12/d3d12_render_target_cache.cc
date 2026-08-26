@@ -1249,7 +1249,8 @@ bool D3D12RenderTargetCache::Resolve(const Memory& memory,
               DirectResolveEligibility::kEligible) {
         resolved_directly = DirectResolveRenderTargets(
             resolve_info, copy_shader_constants, dump_base,
-            dump_row_length_used, dump_rows, dump_pitch, shared_memory);
+            dump_row_length_used, dump_rows, dump_pitch, copy_dest_scaled,
+            shared_memory, texture_cache);
       }
       if (!resolved_directly) {
         DumpRenderTargets(dump_base, dump_row_length_used, dump_rows,
@@ -1258,18 +1259,17 @@ bool D3D12RenderTargetCache::Resolve(const Memory& memory,
     }
 
     if (resolved_directly) {
-      // Invalidate textures - the direct shaders never write the scaled
-      // destination layout, so the range is always unscaled.
+      // Invalidate textures and mark the range as scaled if needed.
       texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
                                         resolve_info.copy_dest_extent_length,
-                                        false);
+                                        copy_dest_scaled);
       written_address_out = resolve_info.copy_dest_extent_start;
       written_length_out = resolve_info.copy_dest_extent_length;
       if (copy_dest_info_out) {
         *copy_dest_info_out = resolve_info.copy_dest_info;
       }
       if (written_scaled_out) {
-        *written_scaled_out = false;
+        *written_scaled_out = copy_dest_scaled;
       }
       copied = true;
     } else if (copy_shader != draw_util::ResolveCopyShaderIndex::kUnknown) {
@@ -3509,7 +3509,8 @@ bool D3D12RenderTargetCache::DirectResolveRenderTargets(
     const draw_util::ResolveInfo& resolve_info,
     const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
     uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
-    uint32_t dump_pitch, D3D12SharedMemory& shared_memory) {
+    uint32_t dump_pitch, bool copy_dest_scaled,
+    D3D12SharedMemory& shared_memory, D3D12TextureCache& texture_cache) {
   assert_true(GetPath() == Path::kHostRenderTargets);
 
   GetResolveCopyRectanglesToDump(dump_base, dump_row_length_used, dump_rows,
@@ -3530,6 +3531,7 @@ bool D3D12RenderTargetCache::DirectResolveRenderTargets(
     pipeline_key.resource_format = rt_key.resource_format;
     pipeline_key.is_depth = rt_key.is_depth;
     pipeline_key.source_scale_native = rt_key.scale_native;
+    pipeline_key.native_layout = uint32_t(!copy_dest_scaled);
     pipeline_key.direct_resolve = 1;
     if (!GetOrCreateDumpPipeline(pipeline_key)) {
       return false;
@@ -3537,8 +3539,22 @@ bool D3D12RenderTargetCache::DirectResolveRenderTargets(
     dump_invocations_.emplace_back(rectangle, pipeline_key);
   }
 
-  if (!shared_memory.RequestRange(resolve_info.copy_dest_extent_start,
-                                  resolve_info.copy_dest_extent_length)) {
+  // Committing starting with the beginning of the potentially written extent,
+  // but making the buffer containing the base current - the beginning of the
+  // bound buffer is what the tiled addresses are relative to.
+  bool dest_committed =
+      copy_dest_scaled
+          ? (texture_cache.EnsureScaledResolveMemoryCommitted(
+                 resolve_info.copy_dest_extent_start,
+                 resolve_info.copy_dest_extent_length) &&
+             texture_cache.MakeScaledResolveRangeCurrent(
+                 resolve_info.copy_dest_base,
+                 resolve_info.copy_dest_extent_start -
+                     resolve_info.copy_dest_base +
+                     resolve_info.copy_dest_extent_length))
+          : shared_memory.RequestRange(resolve_info.copy_dest_extent_start,
+                                       resolve_info.copy_dest_extent_length);
+  if (!dest_committed) {
     XELOGE(
         "D3D12RenderTargetCache: Failed to obtain the direct resolve "
         "destination memory region");
@@ -3550,11 +3566,15 @@ bool D3D12RenderTargetCache::DirectResolveRenderTargets(
   }
 
   // Committed to the direct path from here on.
-  command_processor_.PushDebugMarker(
-      "DirectResolveRenderTargets (Shared Memory Write): base tile %u",
-      dump_base);
+  command_processor_.PushDebugMarker("DirectResolveRenderTargets: base tile %u",
+                                     dump_base);
 
-  shared_memory.UseForWriting();
+  if (copy_dest_scaled) {
+    texture_cache.TransitionCurrentScaledResolveRange(
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  } else {
+    shared_memory.UseForWriting();
+  }
   for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {
     auto& d3d12_rt = *static_cast<D3D12RenderTarget*>(rectangle.render_target);
     command_processor_.PushTransitionBarrier(
@@ -3577,8 +3597,9 @@ bool D3D12RenderTargetCache::DirectResolveRenderTargets(
       copy_shader_constants.dest_relative.dest_info.value;
   resolve_constants[kEdramDumpShaderPushConstantResolveDestCoordinateInfo] =
       copy_shader_constants.dest_relative.dest_coordinate_info.packed;
+  // The scaled destination's binding already starts at the base.
   resolve_constants[kEdramDumpShaderPushConstantResolveDestBase] =
-      copy_shader_constants.dest_base;
+      copy_dest_scaled ? 0 : copy_shader_constants.dest_base;
   resolve_constants[kEdramDumpShaderPushConstantResolveHeightDiv8] =
       resolve_info.height_div_8;
 
@@ -3611,12 +3632,16 @@ bool D3D12RenderTargetCache::DirectResolveRenderTargets(
       root_parameters_set = 0;
       pitches_set = false;
       resolve_constants_set = false;
-      // The whole buffer is bound, which is what lets the destination base
-      // stay the absolute byte offset the shader adds to the tiled address.
+      // Unscaled, the whole buffer is bound, which is what lets the
+      // destination base stay the absolute byte offset the shader adds to the
+      // tiled address. A scaled destination is a window starting at the
+      // destination base instead, so the shader adds nothing.
       command_list.D3DSetComputeRootUnorderedAccessView(
           pipeline_key.is_depth ? kDumpRootParameterDepthEdram
                                 : kDumpRootParameterColorEdram,
-          shared_memory.GetGPUAddress());
+          copy_dest_scaled
+              ? texture_cache.GetCurrentScaledResolveRangeGPUAddress()
+              : shared_memory.GetGPUAddress());
     }
 
     if (!resolve_constants_set) {
@@ -3682,14 +3707,17 @@ bool D3D12RenderTargetCache::DirectResolveRenderTargets(
 
     // A direct resolve dispatches over destination pixels rather than EDRAM
     // samples, so the runs of pixels the guest layout stores contiguously line
-    // up with whole stores. Tiles cover this many of them.
+    // up with whole stores. Tiles cover this many of them - host pixels, so
+    // scaled along with the destination.
     bool format_is_64bpp = rt_key.Is64bpp();
     uint32_t tile_pixels_x =
-        (xenos::kEdramTileWidthSamples >> uint32_t(format_is_64bpp)) >>
-        uint32_t(rt_key.msaa_samples >= xenos::MsaaSamples::k4X);
+        ((xenos::kEdramTileWidthSamples >> uint32_t(format_is_64bpp)) >>
+         uint32_t(rt_key.msaa_samples >= xenos::MsaaSamples::k4X)) *
+        (copy_dest_scaled ? draw_resolution_scale_x() : 1);
     uint32_t tile_pixels_y =
-        xenos::kEdramTileHeightSamples >>
-        uint32_t(rt_key.msaa_samples >= xenos::MsaaSamples::k2X);
+        (xenos::kEdramTileHeightSamples >>
+         uint32_t(rt_key.msaa_samples >= xenos::MsaaSamples::k2X)) *
+        (copy_dest_scaled ? draw_resolution_scale_y() : 1);
     uint32_t pixels_per_thread =
         GetEdramDumpShaderResolvePixelsPerThread(format_is_64bpp);
 
@@ -3733,7 +3761,11 @@ bool D3D12RenderTargetCache::DirectResolveRenderTargets(
     }
   }
 
-  shared_memory.MarkUAVWritesCommitNeeded();
+  if (copy_dest_scaled) {
+    texture_cache.MarkCurrentScaledResolveRangeUAVWritesCommitNeeded();
+  } else {
+    shared_memory.MarkUAVWritesCommitNeeded();
+  }
 
   command_processor_.PopDebugMarker();
   return true;

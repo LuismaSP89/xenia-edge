@@ -1242,10 +1242,6 @@ RenderTargetCache::GetDirectResolveEligibility(
     default:
       return DirectResolveEligibility::kConvertingCopyShader;
   }
-  if (IsDrawResolutionScaled()) {
-    return DirectResolveEligibility::kResolutionScaled;
-  }
-
   uint32_t base, row_length_used, rows, pitch;
   resolve_info.GetCopyEdramTileSpan(base, row_length_used, rows, pitch);
   std::vector<ResolveCopyDumpRectangle> rectangles;

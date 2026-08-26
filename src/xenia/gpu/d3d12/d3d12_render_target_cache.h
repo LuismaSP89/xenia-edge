@@ -530,7 +530,8 @@ class D3D12RenderTargetCache final : public RenderTargetCache {
       const draw_util::ResolveInfo& resolve_info,
       const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
       uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
-      uint32_t dump_pitch, D3D12SharedMemory& shared_memory);
+      uint32_t dump_pitch, bool copy_dest_scaled,
+      D3D12SharedMemory& shared_memory, D3D12TextureCache& texture_cache);
 
   // Writes contents of host render targets within rectangles from
   // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_ - with the plain 1x1

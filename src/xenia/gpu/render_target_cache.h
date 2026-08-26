@@ -555,8 +555,6 @@ class RenderTargetCache {
     kNotHostRenderTargets,
     // The copy converts formats, which the direct shaders don't reproduce.
     kConvertingCopyShader,
-    // The scaled destination layout isn't in the direct shaders.
-    kResolutionScaled,
     // No render target owns any of the source tiles.
     kNoOwnership,
     // A source render target's tile layout differs from the one the resolve
@@ -643,6 +641,8 @@ class RenderTargetCache {
                                  uint32_t rows, uint32_t pitch) const;
 
   // copy_shader is the one ResolveInfo::GetCopyShader picked for this resolve.
+  // Both destination layouts are covered - the caller decides which by what it
+  // binds and by EdramDumpShaderKey::native_layout.
   DirectResolveEligibility GetDirectResolveEligibility(
       const draw_util::ResolveInfo& resolve_info,
       draw_util::ResolveCopyShaderIndex copy_shader) const;
