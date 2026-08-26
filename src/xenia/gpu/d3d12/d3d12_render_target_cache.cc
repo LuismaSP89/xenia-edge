@@ -1880,8 +1880,10 @@ RenderTargetCache::RenderTarget* D3D12RenderTargetCache::CreateRenderTarget(
     D3D12_SHADER_RESOURCE_VIEW_DESC stencil_srv_desc;
     stencil_srv_desc.Format =
         GetDepthSRVStencilDXGIFormat(key.GetDepthFormat());
+    // X24_TYPELESS_G8_UINT puts stencil in G, but the shared SPIR-V emitters
+    // read component 0 like a Vulkan stencil aspect view, so route G there.
     stencil_srv_desc.Shader4ComponentMapping =
-        D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(1, 1, 1, 1);
     if (resource_desc.SampleDesc.Count > 1) {
       dsv_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMS;
       stencil_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
