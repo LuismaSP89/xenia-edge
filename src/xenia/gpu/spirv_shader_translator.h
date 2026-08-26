@@ -349,6 +349,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // bits 0:3 = component_bits - 1
     // bit 4 = signed
     // bit 5 = unsigned-biased
+    // bit 24 = normalized
     // Zero means no scale.
     // Appended at the very tail (std140 uint4 [35]) so it disturbs neither the
     // xenos_draw.glsli tessellation offsets nor the interpreter [34] slot.
