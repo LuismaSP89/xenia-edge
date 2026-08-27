@@ -735,18 +735,24 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
 
     // The tile this run falls in, and its position within it. A run never
     // crosses a tile edge - the tile is a whole number of runs wide and the
-    // dispatch starts on a tile boundary. Tiles are a power of two pixels
-    // tall, but not wide.
+    // dispatch starts on a tile boundary. Neither axis can be reduced to a
+    // shift and a mask: tiles aren't a power of two pixels wide, and an odd
+    // resolution scale makes them not a power of two tall either. Both counts
+    // are compile-time constants, so this is a shift and a mask again wherever
+    // it can be.
     spv::Id tile_x =
         add(extract(dispatch_tile, 0, xenos::kEdramPitchTilesBits),
             builder.createBinOp(spv::OpUDiv, type_uint, run_x,
                                 builder.makeUintConstant(tile_pixels_x)));
-    spv::Id tile_y = add(extract(dispatch_tile, xenos::kEdramPitchTilesBits,
-                                 xenos::kEdramPitchTilesBits),
-                         shift_right(run_y, xe::log2_floor(tile_pixels_y)));
+    spv::Id tile_y =
+        add(extract(dispatch_tile, xenos::kEdramPitchTilesBits,
+                    xenos::kEdramPitchTilesBits),
+            builder.createBinOp(spv::OpUDiv, type_uint, run_y,
+                                builder.makeUintConstant(tile_pixels_y)));
     spv::Id pixel_in_tile_x = builder.createBinOp(
         spv::OpUMod, type_uint, run_x, builder.makeUintConstant(tile_pixels_x));
-    spv::Id pixel_in_tile_y = bitwise_and(run_y, tile_pixels_y - 1);
+    spv::Id pixel_in_tile_y = builder.createBinOp(
+        spv::OpUMod, type_uint, run_y, builder.makeUintConstant(tile_pixels_y));
 
     // The destination pixel, relative to the resolve rectangle. The first tile
     // starts before it when the rectangle is offset within the tile, and those
