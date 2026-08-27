@@ -61,6 +61,16 @@ DEFINE_bool(
 // and insertions require global critical region locking, and insertions also
 // require protecting pages. At 1024, the cache only made the performance worse
 // (415607D4, 16-bit primitive reset index replacement).
+DEFINE_bool(
+    primitive_processor_verify_sources, false,
+    "Diagnostic: re-hash every guest index range converted on the CPU during "
+    "a submission right before that submission is sent to the GPU, and log "
+    "each range that the guest modified after it was converted. Real hardware "
+    "fetches index data when the GPU reaches the draw, so a title that keeps "
+    "writing dynamic index buffers after kicking the ring gets a torn "
+    "conversion snapshot here - this logs those events. Costs CPU time.",
+    "GPU.Debug");
+
 DEFINE_int32(
     primitive_processor_cache_min_indices, 4096,
     "Smallest number of guest indices to store in the cache to try reusing "
@@ -794,6 +804,8 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
       } else {
         const void* guest_indices_ptr =
             memory_.TranslatePhysical(guest_index_base);
+        RecordConversionSource(guest_index_base,
+                               guest_index_buffer_needed_bytes);
         cacheable.index_buffer_type = ProcessedIndexBufferType::kHostConverted;
         cacheable.host_primitive_reset_enabled = false;
         std::function<uint32_t(uint32_t)> host_index_count_getter;
@@ -1787,6 +1799,68 @@ PrimitiveProcessor::MemoryInvalidationCallbackThunk(
     bool exact_range) {
   return reinterpret_cast<PrimitiveProcessor*>(context_ptr)
       ->MemoryInvalidationCallback(physical_address_start, length, exact_range);
+}
+
+namespace {
+uint64_t HashConversionSource(const void* data, size_t length) {
+  // FNV-1a over 8-byte chunks - cheap and sufficient to detect torn or
+  // rewritten index data.
+  const uint8_t* bytes = static_cast<const uint8_t*>(data);
+  uint64_t hash = 14695981039346656037ull;
+  size_t qwords = length >> 3;
+  const uint64_t* q = reinterpret_cast<const uint64_t*>(bytes);
+  for (size_t i = 0; i < qwords; ++i) {
+    uint64_t v;
+    std::memcpy(&v, &q[i], sizeof(v));
+    hash = (hash ^ v) * 1099511628211ull;
+  }
+  for (size_t i = qwords << 3; i < length; ++i) {
+    hash = (hash ^ bytes[i]) * 1099511628211ull;
+  }
+  return hash;
+}
+}  // namespace
+
+void PrimitiveProcessor::RecordConversionSource(uint32_t address,
+                                                uint32_t length) {
+  if (!cvars::primitive_processor_verify_sources || !length) {
+    return;
+  }
+  const void* data = memory_.TranslatePhysical(address);
+  conversion_source_records_.push_back(
+      {address, length, HashConversionSource(data, length)});
+}
+
+void PrimitiveProcessor::VerifyConversionSourcesAtSubmit() {
+  if (conversion_source_records_.empty()) {
+    return;
+  }
+  uint32_t mismatches = 0;
+  uint32_t mismatch_bytes = 0;
+  uint32_t first_mismatch_address = 0;
+  for (const ConversionSourceRecord& record : conversion_source_records_) {
+    const void* data = memory_.TranslatePhysical(record.address);
+    if (HashConversionSource(data, record.length) != record.hash) {
+      if (!mismatches) {
+        first_mismatch_address = record.address;
+      }
+      ++mismatches;
+      mismatch_bytes += record.length;
+    }
+  }
+  conversion_source_records_.clear();
+  if (mismatches) {
+    ++conversion_source_mismatch_events_;
+    if (conversion_source_mismatch_events_ <= 64 ||
+        (conversion_source_mismatch_events_ % 256) == 0) {
+      XELOGW(
+          "Primitive processor: {} converted guest index range(s) ({} KB, "
+          "first at 0x{:08X}) were modified by the guest before the "
+          "submission reached the GPU - torn conversion likely [event {}]",
+          mismatches, mismatch_bytes >> 10, first_mismatch_address,
+          conversion_source_mismatch_events_);
+    }
+  }
 }
 
 }  // namespace gpu

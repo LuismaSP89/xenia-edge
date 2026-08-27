@@ -104,6 +104,13 @@ namespace gpu {
 
 class PrimitiveProcessor {
  public:
+  // Diagnostic (primitive_processor_verify_sources): re-hash the guest index
+  // ranges that were converted on the CPU during the submission being closed
+  // and log every range the guest modified after it was converted (the real
+  // GPU would have fetched the final data at draw execution time). Call from
+  // the backend right before the submission is sent to the GPU.
+  void VerifyConversionSourcesAtSubmit();
+
   enum ProcessedIndexBufferType {
     // Auto-indexed on the host.
     kNone,
@@ -322,6 +329,16 @@ class PrimitiveProcessor {
   virtual void* RequestHostConvertedIndexBufferForCurrentFrame(
       xenos::IndexFormat format, uint32_t index_count, bool coalign_for_simd,
       uint32_t coalignment_original_address, size_t& backend_handle_out) = 0;
+
+  // Diagnostic bookkeeping for primitive_processor_verify_sources.
+  struct ConversionSourceRecord {
+    uint32_t address;
+    uint32_t length;
+    uint64_t hash;
+  };
+  std::vector<ConversionSourceRecord> conversion_source_records_;
+  uint64_t conversion_source_mismatch_events_ = 0;
+  void RecordConversionSource(uint32_t address, uint32_t length);
 
  private:
 #if XE_GPU_PRIMITIVE_PROCESSOR_SIMD_SIZE

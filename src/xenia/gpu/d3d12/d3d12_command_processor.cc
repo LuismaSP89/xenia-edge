@@ -3980,6 +3980,10 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
     // (shared_memory_late_upload_snapshot).
     shared_memory_->FlushDeferredUploadSnapshots();
 
+    // Diagnostic: detect guest index data rewritten after CPU-side primitive
+    // conversion (primitive_processor_verify_sources).
+    primitive_processor_->VerifyConversionSourcesAtSubmit();
+
     // TODO(Triang3l): Error checking.
 
     ID3D12CommandQueue* direct_queue = provider.GetDirectQueue();
