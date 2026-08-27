@@ -39,6 +39,17 @@ DEFINE_bool(d3d12_bindless, true,
             "D3D12");
 
 DEFINE_uint32(
+    d3d12_completed_submission_lag, 0,
+    "Diagnostic: treat the completed submission as this many submissions "
+    "older than fence tracking reports when reclaiming submission-tracked "
+    "transient resources (shared memory upload staging, EDRAM snapshot and "
+    "render target transfer buffers). Increases memory use. If transient "
+    "single-frame corruption disappears with a value of 2-8, a "
+    "submission-tracked resource is being recycled while the GPU still "
+    "reads it.",
+    "D3D12");
+
+DEFINE_uint32(
     d3d12_completed_frame_lag, 0,
     "Diagnostic: treat the completed frame as this many frames older than "
     "the fence tracking reports, delaying the reuse of all frame-tracked "
@@ -73,6 +84,16 @@ D3D12CommandProcessor::D3D12CommandProcessor(
     : CommandProcessor(graphics_system, kernel_state),
       deferred_command_list_(*this) {}
 D3D12CommandProcessor::~D3D12CommandProcessor() = default;
+
+uint64_t D3D12CommandProcessor::GetCompletedSubmissionForReclaims() const {
+  uint64_t completed = GetCompletedSubmission();
+  if (cvars::d3d12_completed_submission_lag) {
+    completed = completed > cvars::d3d12_completed_submission_lag
+                    ? completed - cvars::d3d12_completed_submission_lag
+                    : 0;
+  }
+  return completed;
+}
 
 void D3D12CommandProcessor::UpdateDebugMarkersEnabled() {
   // Enable debug markers if the CVAR is set or RenderDoc is detected.

@@ -106,6 +106,9 @@ class D3D12CommandProcessor final : public CommandProcessor {
   uint64_t GetCompletedSubmission() const override {
     return completion_timeline_->GetCompletedSubmissionFromLastUpdate();
   }
+  // For reclaiming submission-tracked transient resources - applies the
+  // d3d12_completed_submission_lag diagnostic safety margin.
+  uint64_t GetCompletedSubmissionForReclaims() const;
 
   // Must be called when a subsystem does something like UpdateTileMappings so
   // it can be awaited in CheckSubmissionCompletion(GetCurrentSubmission()) if

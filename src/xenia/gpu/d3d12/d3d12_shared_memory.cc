@@ -347,7 +347,8 @@ void D3D12SharedMemory::ClearCache() {
 }
 
 void D3D12SharedMemory::CompletedSubmissionUpdated() {
-  upload_buffer_pool_->Reclaim(command_processor_.GetCompletedSubmission());
+  upload_buffer_pool_->Reclaim(
+      command_processor_.GetCompletedSubmissionForReclaims());
 }
 
 void D3D12SharedMemory::BeginSubmission() {

@@ -1190,11 +1190,11 @@ void D3D12RenderTargetCache::Shutdown(bool from_destructor) {
 void D3D12RenderTargetCache::CompletedSubmissionUpdated() {
   if (edram_snapshot_restore_pool_) {
     edram_snapshot_restore_pool_->Reclaim(
-        command_processor_.GetCompletedSubmission());
+        command_processor_.GetCompletedSubmissionForReclaims());
   }
   if (transfer_vertex_buffer_pool_) {
     transfer_vertex_buffer_pool_->Reclaim(
-        command_processor_.GetCompletedSubmission());
+        command_processor_.GetCompletedSubmissionForReclaims());
   }
 }
 
