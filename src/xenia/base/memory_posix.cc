@@ -12,11 +12,9 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include <algorithm>
 #include <cerrno>
 #include <cstddef>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <functional>
@@ -167,29 +165,6 @@ struct MappedFileRange {
 
 std::vector<MappedFileRange> mapped_file_ranges;
 std::mutex g_mapped_file_ranges_mutex;
-
-// Track shm file names for cleanup on exit
-std::vector<std::string> g_shm_file_names;
-std::mutex g_shm_file_names_mutex;
-static bool g_cleanup_handlers_installed = false;
-
-#if !XE_PLATFORM_ANDROID
-static void CleanupAtExit() {
-  for (const auto& name : g_shm_file_names) {
-    shm_unlink(name.c_str());
-  }
-}
-
-static void InstallCleanupHandlers() {
-  if (g_cleanup_handlers_installed) {
-    return;
-  }
-  g_cleanup_handlers_installed = true;
-
-  std::atexit(CleanupAtExit);
-  std::at_quick_exit(CleanupAtExit);
-}
-#endif  // !XE_PLATFORM_ANDROID
 
 // Lets a Win32-style length-0 release find the reservation's extent.
 static std::mutex g_reservations_mutex;
@@ -494,12 +469,9 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path,
     shm_unlink(shm_name.c_str());
     return kFileMappingHandleInvalid;
   }
-  // Track for cleanup on abnormal exit and install cleanup handlers
-  {
-    std::lock_guard guard(g_shm_file_names_mutex);
-    g_shm_file_names.push_back(shm_name);
-  }
-  InstallCleanupHandlers();
+  // The descriptor keeps the object alive, so drop the name now. Nothing
+  // else can open it and nothing leaks if we die without unwinding.
+  shm_unlink(shm_name.c_str());
   return ret;
 #else
   auto full_path = "/" / path;
@@ -542,12 +514,7 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path,
     shm_unlink(full_path.c_str());
     return kFileMappingHandleInvalid;
   }
-  // Track for cleanup on abnormal exit and install cleanup handlers
-  {
-    std::lock_guard guard(g_shm_file_names_mutex);
-    g_shm_file_names.push_back(full_path.string());
-  }
-  InstallCleanupHandlers();
+  shm_unlink(full_path.c_str());
   return ret;
 #endif  // XE_PLATFORM_MAC
 #endif
@@ -555,43 +522,8 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path,
 
 void CloseFileMappingHandle(FileMappingHandle handle,
                             const std::filesystem::path& path) {
+  // Name already unlinked at creation, so the object dies with this close.
   close(handle);
-#if !XE_PLATFORM_ANDROID
-#if XE_PLATFORM_MAC
-  std::string shm_name = "/" + path.filename().string();
-  if (shm_name.size() > 30) {
-    std::size_t h = std::hash<std::string>{}(shm_name);
-    char hash_buf[24];
-    std::snprintf(hash_buf, sizeof(hash_buf), "/%016zx", h);
-    shm_name = hash_buf;
-  }
-  shm_unlink(shm_name.c_str());
-  // Remove from tracking
-  {
-    std::lock_guard guard(g_shm_file_names_mutex);
-    auto it = std::ranges::find(g_shm_file_names, shm_name);
-    if (it != g_shm_file_names.end()) {
-      g_shm_file_names.erase(it);
-    }
-  }
-#else
-  auto full_path = "/" / path;
-  // Only shm_open mappings have a name to unlink; a memfd dies with the close
-  // above and was never tracked.
-  bool tracked = false;
-  {
-    std::lock_guard guard(g_shm_file_names_mutex);
-    auto it = std::ranges::find(g_shm_file_names, full_path.string());
-    if (it != g_shm_file_names.end()) {
-      g_shm_file_names.erase(it);
-      tracked = true;
-    }
-  }
-  if (tracked) {
-    shm_unlink(full_path.c_str());
-  }
-#endif  // XE_PLATFORM_MAC
-#endif
 }
 
 void* MapFileView(FileMappingHandle handle, void* base_address, size_t length,
