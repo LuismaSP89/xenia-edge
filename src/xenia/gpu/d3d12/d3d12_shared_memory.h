@@ -60,6 +60,14 @@ class D3D12SharedMemory : public SharedMemory {
   void CompletedSubmissionUpdated();
   void BeginSubmission();
 
+  // With shared_memory_late_upload_snapshot enabled, re-reads every range
+  // staged for upload in the current submission right before it is sent to
+  // the GPU, refreshing staged copies whose guest memory the CPU modified
+  // after they were snapshotted. Emulates the real console, where the GPU
+  // fetches guest RAM when it reaches the draw rather than when the command
+  // is queued. Call from EndSubmission before executing the command list.
+  void FlushDeferredUploadSnapshots();
+
   // RequestRange may transition the buffer to copy destination - call it before
   // UseForReading or UseForWriting.
 
@@ -189,6 +197,18 @@ class D3D12SharedMemory : public SharedMemory {
   std::unique_ptr<ui::d3d12::D3D12UploadBufferPool> upload_buffer_pool_;
   // Upload ranges left after the memexport ones are refreshed on the GPU.
   std::vector<std::pair<uint32_t, uint32_t>> cpu_upload_ranges_;
+
+  // Staged upload copies of the current submission, kept so
+  // FlushDeferredUploadSnapshots can refresh them at submit time if the CPU
+  // modified the source guest memory after the copy was staged
+  // (shared_memory_late_upload_snapshot).
+  struct StagedUploadCopy {
+    uint8_t* staging;
+    uint32_t guest_address;
+    uint32_t size;
+  };
+  std::vector<StagedUploadCopy> staged_upload_copies_;
+  uint64_t late_snapshot_refresh_count_ = 0;
 
   // Created temporarily, only for downloading.
   ID3D12Resource* trace_download_buffer_ = nullptr;

@@ -3958,6 +3958,11 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
     // destroyed between frames.
     SubmitBarriers();
 
+    // Refresh staged shared-memory uploads whose guest memory the CPU
+    // modified after staging, right before the GPU consumes them
+    // (shared_memory_late_upload_snapshot).
+    shared_memory_->FlushDeferredUploadSnapshots();
+
     // TODO(Triang3l): Error checking.
 
     ID3D12CommandQueue* direct_queue = provider.GetDirectQueue();

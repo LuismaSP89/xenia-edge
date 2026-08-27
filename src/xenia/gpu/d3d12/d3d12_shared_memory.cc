@@ -23,6 +23,19 @@ DECLARE_bool(memexport_enable);
 DECLARE_bool(tiled_shared_memory);
 DECLARE_bool(shared_memory_zero_copy);
 
+DEFINE_bool(
+    shared_memory_late_upload_snapshot, false,
+    "Re-read every range staged for upload right before the submission is "
+    "sent to the GPU, refreshing staged copies whose guest memory the CPU "
+    "modified after they were first snapshotted, and log those refreshes. "
+    "Emulates the real console more closely: hardware fetches guest RAM when "
+    "the GPU reaches the draw, not when the command is queued, so titles that "
+    "keep writing buffers after kicking the ring (racing the beam) see their "
+    "final data instead of a torn early snapshot. Experimental; may break "
+    "titles that intentionally overwrite buffers between draws within one "
+    "frame while fencing on the command processor position.",
+    "GPU");
+
 namespace xe {
 namespace gpu {
 namespace d3d12 {
@@ -294,6 +307,7 @@ bool D3D12SharedMemory::TryInitializeZeroCopy() {
 void D3D12SharedMemory::Shutdown(bool from_destructor) {
   ResetTraceDownload();
 
+  staged_upload_copies_.clear();
   upload_buffer_pool_.reset();
 
   ui::d3d12::util::ReleaseAndNull(buffer_descriptor_heap_);
@@ -328,6 +342,7 @@ void D3D12SharedMemory::Shutdown(bool from_destructor) {
 void D3D12SharedMemory::ClearCache() {
   SharedMemory::ClearCache();
 
+  staged_upload_copies_.clear();
   upload_buffer_pool_->ClearCache();
 }
 
@@ -633,6 +648,11 @@ bool D3D12SharedMemory::UploadRanges(
             memory().TranslatePhysical(upload_range_start << page_size_log2()),
             upload_buffer_size);
       }
+      if (cvars::shared_memory_late_upload_snapshot) {
+        staged_upload_copies_.push_back({upload_buffer_mapping,
+                                         upload_range_start << page_size_log2(),
+                                         uint32_t(upload_buffer_size)});
+      }
       command_list.D3DCopyBufferRegion(
           buffer_, upload_range_start << page_size_log2(), upload_buffer,
           UINT64(upload_buffer_offset), UINT64(upload_buffer_size));
@@ -644,6 +664,42 @@ bool D3D12SharedMemory::UploadRanges(
   }
   command_processor_.PopDebugMarker();
   return true;
+}
+
+void D3D12SharedMemory::FlushDeferredUploadSnapshots() {
+  if (staged_upload_copies_.empty()) {
+    return;
+  }
+  uint32_t refreshed = 0;
+  uint32_t refreshed_bytes = 0;
+  uint32_t first_refreshed_address = 0;
+  for (const StagedUploadCopy& copy : staged_upload_copies_) {
+    const void* guest = memory().TranslatePhysical(copy.guest_address);
+    if (std::memcmp(copy.staging, guest, copy.size) != 0) {
+      std::memcpy(copy.staging, guest, copy.size);
+      if (!refreshed) {
+        first_refreshed_address = copy.guest_address;
+      }
+      ++refreshed;
+      refreshed_bytes += copy.size;
+    }
+  }
+  staged_upload_copies_.clear();
+  if (refreshed) {
+    swcache::WriteFence();
+    ++late_snapshot_refresh_count_;
+    // The first refreshes are the interesting diagnostic signal; afterwards
+    // only log occasionally to avoid flooding.
+    if (late_snapshot_refresh_count_ <= 32 ||
+        (late_snapshot_refresh_count_ % 256) == 0) {
+      XELOGW(
+          "Shared memory: {} staged upload range(s) ({} KB, first at 0x{:08X}) "
+          "were modified by the CPU before submit - resnapshotted "
+          "[occurrence {}]",
+          refreshed, refreshed_bytes >> 10, first_refreshed_address,
+          late_snapshot_refresh_count_);
+    }
+  }
 }
 
 }  // namespace d3d12
