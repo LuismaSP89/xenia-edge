@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <cstring>
 #if XE_PLATFORM_MAC
 #include <limits.h>
 #include <mach-o/dyld.h>
@@ -270,13 +271,19 @@ std::vector<FileInfo> ListFilesUnsorted(const std::filesystem::path& path) {
     FileInfo info;
 
     info.name = ent->d_name;
+    const auto child_path = path / info.name;
     struct stat st;
-    stat((path / info.name).c_str(), &st);
+    if (stat(child_path.c_str(), &st) != 0 &&
+        lstat(child_path.c_str(), &st) != 0) {
+      std::memset(&st, 0, sizeof(st));
+    }
     info.create_timestamp = convertUnixtimeToWinFiletime(st.st_ctime);
     info.access_timestamp = convertUnixtimeToWinFiletime(st.st_atime);
     info.write_timestamp = convertUnixtimeToWinFiletime(st.st_mtime);
     info.path = path;
-    if (ent->d_type == DT_DIR) {
+    // d_type is unreliable: DT_LNK for a symlinked directory, and DT_UNKNOWN
+    // on filesystems that do not populate it. Classify from the stat.
+    if (S_ISDIR(st.st_mode)) {
       info.type = FileInfo::Type::kDirectory;
       info.total_size = 0;
     } else {
