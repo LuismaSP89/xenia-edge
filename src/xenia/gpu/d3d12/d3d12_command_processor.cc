@@ -38,6 +38,16 @@ DEFINE_bool(d3d12_bindless, true,
             "but may make debugging more complicated.",
             "D3D12");
 
+DEFINE_uint32(
+    d3d12_completed_frame_lag, 0,
+    "Diagnostic: treat the completed frame as this many frames older than "
+    "the fence tracking reports, delaying the reuse of all frame-tracked "
+    "transient resources (converted index buffers, constant buffers, "
+    "descriptor heaps). Increases memory use. If transient single-frame "
+    "geometry/constant corruption disappears with a value of 2-4, some "
+    "frame-tracked resource is being recycled while the GPU still reads it.",
+    "D3D12");
+
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(d3d12_debug);
 DECLARE_bool(gpu_debug_markers);
@@ -3801,6 +3811,13 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
         break;
       }
       frame_completed_ = frame;
+    }
+    // Diagnostic safety margin for frame-tracked transient resource reuse.
+    if (cvars::d3d12_completed_frame_lag) {
+      frame_completed_ =
+          frame_completed_ > cvars::d3d12_completed_frame_lag
+              ? frame_completed_ - cvars::d3d12_completed_frame_lag
+              : 0;
     }
   }
 
