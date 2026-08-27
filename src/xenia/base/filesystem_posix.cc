@@ -13,7 +13,6 @@
 #include "xenia/base/string.h"
 #include "xenia/xbox.h"
 
-#include <assert.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <ftw.h>
@@ -91,10 +90,15 @@ std::filesystem::path GetUserFolder() {
   // if HOME not set, fall back to this
   if (home == NULL) {
     struct passwd pw1;
-    struct passwd* pw;
+    struct passwd* pw = nullptr;
     char buf[4096];  // could potentionally lower this
-    getpwuid_r(getuid(), &pw1, buf, sizeof(buf), &pw);
-    assert(&pw1 == pw);  // sanity check
+    // getpwuid_r returns 0 with a null result for "no entry".
+    if (getpwuid_r(getuid(), &pw1, buf, sizeof(buf), &pw) != 0 || !pw) {
+      XELOGW(
+          "GetUserFolder: no HOME and no passwd entry; using the current "
+          "directory");
+      return std::filesystem::current_path() / ".local" / "share";
+    }
     home = pw->pw_dir;
   }
 
