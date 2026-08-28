@@ -566,6 +566,11 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object,
                                        : 0;
     const uint32_t entry_pulse_epoch = wait_object->cooperative_pulse_epoch();
     wait_object->EnterCooperativeWait(self);  // FIFO fairness for semaphores
+    if (self) {
+      const uint32_t wait_handle_id = wait_object->handle();
+      self->set_cooperative_wait_shape(XThread::CooperativeWaitKind::kSingle,
+                                       &wait_handle_id, 1);
+    }
     X_STATUS status = CooperativeWait(
         scheduler, kthread, wait_object, alertable != 0, deadline_ms,
         [&]() -> std::optional<X_STATUS> {

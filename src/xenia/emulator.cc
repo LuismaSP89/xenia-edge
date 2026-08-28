@@ -1724,12 +1724,50 @@ bool Emulator::ExceptionCallback(Exception* ex) {
           fiber_self->thread_state()
               ? uint32_t(fiber_self->thread_state()->context()->lr)
               : 0;
+      // A #GP from a misaligned aligned-move arrives as an access violation
+      // reporting address -1, so the stack pointer and its alignment are what
+      // separate that from a real fault.
+      uint64_t host_sp = 0;
+      if (auto* host_context = ex->thread_context()) {
+#if XE_ARCH_AMD64
+        host_sp = host_context->rsp;
+#elif XE_ARCH_ARM64
+        host_sp = host_context->sp;
+#endif
+      }
+      const char* code_name = "unknown exception";
+      std::string fault_detail;
+      switch (ex->code()) {
+        case Exception::Code::kAccessViolation: {
+          code_name = "access violation";
+          const char* op = "unknown";
+          switch (ex->access_violation_operation()) {
+            case Exception::AccessViolationOperation::kRead:
+              op = "read";
+              break;
+            case Exception::AccessViolationOperation::kWrite:
+              op = "write";
+              break;
+            default:
+              break;
+          }
+          fault_detail =
+              fmt::format(" ({} at 0x{:016X})", op, ex->fault_address());
+        } break;
+        case Exception::Code::kIllegalInstruction:
+          code_name = "illegal instruction";
+          break;
+        default:
+          break;
+      }
       XELOGE(
           "Host-side crash on fiber thread (handle 0x{:08X}, guest tid "
-          "0x{:08X}) at host PC 0x{:016X} (module+0x{:X}, guest lr 0x{:08X}). "
+          "0x{:08X}): {}{} at host PC 0x{:016X} (module+0x{:X}, guest lr "
+          "0x{:08X}, host sp 0x{:016X}, sp%16={}). "
           "Halting fiber to keep the dispatcher alive.",
-          fiber_self->handle(), fiber_self->thread_id(), ex->pc(),
-          module_offset, guest_lr);
+          fiber_self->handle(), fiber_self->thread_id(), code_name,
+          fault_detail, ex->pc(), module_offset, guest_lr, host_sp,
+          host_sp % 16);
       ex->set_resume_pc(reinterpret_cast<uint64_t>(&HaltCrashedFiberThunk));
       return true;
     }
