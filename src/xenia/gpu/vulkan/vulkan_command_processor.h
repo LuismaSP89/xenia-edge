@@ -694,7 +694,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // No specific reason for 32768, just the "too much" descriptor count from
   // Direct3D 12 PIX warnings.
   static constexpr uint32_t kLinkedTypeDescriptorPoolSetCount = 32768;
-  static const VkDescriptorPoolSize kDescriptorPoolSizeUniformBuffer;
+  static const VkDescriptorPoolSize kDescriptorPoolSizeUniformBufferDynamic;
   static const VkDescriptorPoolSize kDescriptorPoolSizeStorageBuffer;
   static const VkDescriptorPoolSize kDescriptorPoolSizeTextures[2];
   ui::vulkan::LinkedTypeDescriptorSetAllocator
@@ -933,8 +933,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
 
   // Pipeline layout of the current guest graphics pipeline.
   const PipelineLayout* current_guest_graphics_pipeline_layout_;
+  // The bindings are VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, so the infos
+  // describe only the pool page and the size - the offset within the page is
+  // passed when binding and the info offset stays 0.
   VkDescriptorBufferInfo current_constant_buffer_infos_
-      [SpirvShaderTranslator::kConstantBufferCount];
+      [SpirvShaderTranslator::kConstantBufferCount]{};
+  uint32_t current_constant_buffer_dynamic_offsets_
+      [SpirvShaderTranslator::kConstantBufferCount]{};
   // Whether up-to-date data has been written to constant (uniform) buffers, and
   // the buffer infos in current_constant_buffer_infos_ point to them.
   uint32_t current_constant_buffers_up_to_date_;
