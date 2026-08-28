@@ -771,6 +771,11 @@ class MetalCommandProcessor : public CommandProcessor {
   uint32_t current_draw_index_ = 0;
   bool copy_resolve_writes_pending_ = false;
 
+  // Host viewport of the previous draw, reused while the inputs it was derived
+  // from stay the same.
+  draw_util::GetViewportInfoArgs previous_viewport_info_args_{};
+  draw_util::ViewportInfo previous_viewport_info_{};
+
   // Memexport tracking for shared memory invalidation.
   std::vector<draw_util::MemExportRange> memexport_ranges_;
   // Page tracking so a fence the guest reads can await export output. The

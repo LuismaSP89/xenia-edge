@@ -2690,7 +2690,13 @@ void MetalCommandProcessor::ComputeDrawViewportInfo(
       normalized_depth_control, convert_z_to_float24, true,
       pixel_shader && pixel_shader->writes_depth());
   gviargs.SetupRegisterValues(regs);
-  draw_util::GetHostViewportInfo(&gviargs, viewport_info_out);
+  if (gviargs == previous_viewport_info_args_) {
+    viewport_info_out = previous_viewport_info_;
+  } else {
+    draw_util::GetHostViewportInfo(&gviargs, viewport_info_out);
+    previous_viewport_info_args_ = gviargs;
+    previous_viewport_info_ = viewport_info_out;
+  }
 }
 
 void MetalCommandProcessor::ApplyViewportAndScissor(
