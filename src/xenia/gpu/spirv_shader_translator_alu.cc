@@ -25,23 +25,22 @@ spv::Id SpirvShaderTranslator::ZeroIfAnyOperandIsZero(spv::Id value,
                                                       spv::Id operand_0_abs,
                                                       spv::Id operand_1_abs) {
   EnsureBuildPointAvailable();
-  int num_components = builder_->getNumComponents(value);
-  assert_true(builder_->getNumComponents(operand_0_abs) == num_components);
-  assert_true(builder_->getNumComponents(operand_1_abs) == num_components);
+  assert_true(builder_->getNumComponents(value) == 1);
+  assert_true(builder_->getNumComponents(operand_0_abs) == 1);
+  assert_true(builder_->getNumComponents(operand_1_abs) == 1);
   return builder_->createTriOp(
       spv::OpSelect, type_float_,
-      builder_->createBinOp(
-          spv::OpFOrdEqual, type_bool_vectors_[num_components - 1],
-          builder_->createBinBuiltinCall(
-              type_float_vectors_[num_components - 1], ext_inst_glsl_std_450_,
-              GLSLstd450NMin, operand_0_abs, operand_1_abs),
-          const_float_vectors_0_[num_components - 1]),
-      const_float_vectors_0_[num_components - 1], value);
+      builder_->createBinOp(spv::OpFOrdEqual, type_bool_,
+                            builder_->createBinBuiltinCall(
+                                type_float_, ext_inst_glsl_std_450_,
+                                GLSLstd450NMin, operand_0_abs, operand_1_abs),
+                            const_float_0_),
+      const_float_0_, value);
 }
 
 spv::Id SpirvShaderTranslator::ReduceFloatPrecision(spv::Id value,
                                                     uint32_t mantissa_bits) {
-  // Implements round-to-nearest with ties rounding up.
+  // Implements round-to-nearest with ties rounding away from zero.
   // Special values (INF, NaN, signed zeros) are preserved.
   // Denormals may be flushed to zero, closer approximating Xbox 360
   // hardware behavior.
@@ -111,6 +110,11 @@ spv::Id SpirvShaderTranslator::ReduceFloatPrecision(spv::Id value,
   // Select between truncated and rounded-up value
   spv::Id result_bits = builder_->createTriOp(
       spv::OpSelect, type_uint_, should_round_up, safe_rounded, truncated_bits);
+
+  // Inf and NaN pass through, rounding them can produce a signed zero or an
+  // infinity.
+  result_bits = builder_->createTriOp(spv::OpSelect, type_uint_,
+                                      original_finite, result_bits, value_bits);
 
   // Convert back to float
   return builder_->createUnaryOp(spv::OpBitcast, type_float_, result_bits);
