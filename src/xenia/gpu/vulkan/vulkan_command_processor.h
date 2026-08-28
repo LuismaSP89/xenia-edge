@@ -62,7 +62,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
  public:
   // Single-descriptor layouts for use within a single frame.
   enum class SingleTransientDescriptorLayout {
-    kStorageBufferCompute,
+    kStorageBuffer,
     kCount,
   };
 

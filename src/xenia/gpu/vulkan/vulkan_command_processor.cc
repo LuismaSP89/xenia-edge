@@ -323,14 +323,16 @@ bool VulkanCommandProcessor::SetupContext() {
         "constant buffers");
     return false;
   }
-  // Transient: storage buffer for compute shaders.
+  // Transient: one storage buffer. Kept identically defined to the render
+  // target cache's storage buffer layout - sets from both are bound into the
+  // same slots, and stage flags are part of layout compatibility.
   VkDescriptorSetLayoutBinding descriptor_set_layout_binding_transient;
   descriptor_set_layout_binding_transient.binding = 0;
   descriptor_set_layout_binding_transient.descriptorType =
       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   descriptor_set_layout_binding_transient.descriptorCount = 1;
   descriptor_set_layout_binding_transient.stageFlags =
-      VK_SHADER_STAGE_COMPUTE_BIT;
+      VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
   descriptor_set_layout_binding_transient.pImmutableSamplers = nullptr;
   descriptor_set_layout_create_info.bindingCount = 1;
   descriptor_set_layout_create_info.pBindings =
@@ -338,11 +340,10 @@ bool VulkanCommandProcessor::SetupContext() {
   if (dfn.vkCreateDescriptorSetLayout(
           device, &descriptor_set_layout_create_info, nullptr,
           &descriptor_set_layouts_single_transient_[size_t(
-              SingleTransientDescriptorLayout::kStorageBufferCompute)]) !=
+              SingleTransientDescriptorLayout::kStorageBuffer)]) !=
       VK_SUCCESS) {
     XELOGE(
-        "Failed to create a Vulkan descriptor set layout for a storage buffer "
-        "bound to the compute shader");
+        "Failed to create a Vulkan descriptor set layout for a storage buffer");
     return false;
   }
 
@@ -2838,9 +2839,8 @@ VkDescriptorSet VulkanCommandProcessor::AllocateSingleTransientDescriptor(
     const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
     const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
     const VkDevice device = vulkan_device->device();
-    bool is_storage_buffer =
-        transient_descriptor_layout ==
-        SingleTransientDescriptorLayout::kStorageBufferCompute;
+    bool is_storage_buffer = transient_descriptor_layout ==
+                             SingleTransientDescriptorLayout::kStorageBuffer;
     ui::vulkan::LinkedTypeDescriptorSetAllocator&
         transient_descriptor_allocator =
             is_storage_buffer ? transient_descriptor_allocator_storage_buffer_

@@ -97,7 +97,7 @@ class VulkanTextureCache final : public TextureCache {
                                               xenos::FetchOpDimension dimension,
                                               bool is_signed);
 
-  // Descriptor set (kStorageBufferCompute layout) binding the whole shared
+  // Descriptor set (kStorageBuffer layout) binding the whole shared
   // memory buffer for compute load/store, or VK_NULL_HANDLE if the buffer
   // doesn't fit in maxStorageBufferRange. When valid, the byte offset into the
   // buffer must be supplied via push constants. Shared with resolve.
@@ -460,7 +460,7 @@ class VulkanTextureCache final : public TextureCache {
   std::array<VkPipeline, kLoadShaderCount> load_pipelines_scaled_{};
 
   // Persistent descriptor binding the whole shared memory buffer
-  // (kStorageBufferCompute layout) for compute load/store, so per-operation
+  // (kStorageBuffer layout) for compute load/store, so per-operation
   // transient descriptors don't need to be allocated and written. Only created
   // when the buffer fits in maxStorageBufferRange; the byte offset into the
   // buffer is passed via push constants instead. Used as the source of texture

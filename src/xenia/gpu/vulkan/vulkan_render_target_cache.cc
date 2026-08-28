@@ -368,7 +368,7 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
   resolve_copy_descriptor_set_layouts[kResolveCopyDescriptorSetDest] =
       command_processor_.GetSingleTransientDescriptorLayout(
           VulkanCommandProcessor::SingleTransientDescriptorLayout ::
-              kStorageBufferCompute);
+              kStorageBuffer);
   VkPushConstantRange resolve_copy_push_constant_range;
   resolve_copy_push_constant_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
   resolve_copy_push_constant_range.offset = 0;
@@ -1163,7 +1163,7 @@ bool VulkanRenderTargetCache::Resolve(
                 ? texture_cache.shared_memory_persistent_descriptor_set()
                 : command_processor_.AllocateSingleTransientDescriptor(
                       VulkanCommandProcessor::SingleTransientDescriptorLayout ::
-                          kStorageBufferCompute);
+                          kStorageBuffer);
         if (descriptor_set_dest != VK_NULL_HANDLE) {
           // Write the destination descriptor.
           VkDescriptorBufferInfo write_descriptor_set_dest_buffer_info;
@@ -3881,7 +3881,7 @@ bool VulkanRenderTargetCache::DirectResolveRenderTargets(
     scaled_dest_buffer = texture_cache.GetCurrentScaledResolveBuffer();
     descriptor_set_dest = command_processor_.AllocateSingleTransientDescriptor(
         VulkanCommandProcessor::SingleTransientDescriptorLayout::
-            kStorageBufferCompute);
+            kStorageBuffer);
     if (scaled_dest_buffer == VK_NULL_HANDLE ||
         descriptor_set_dest == VK_NULL_HANDLE) {
       return false;

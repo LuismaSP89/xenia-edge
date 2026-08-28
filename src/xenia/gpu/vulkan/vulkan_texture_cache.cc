@@ -1386,7 +1386,7 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
   VkDescriptorSet descriptor_set_dest =
       command_processor_.AllocateSingleTransientDescriptor(
           VulkanCommandProcessor::SingleTransientDescriptorLayout ::
-              kStorageBufferCompute);
+              kStorageBuffer);
   if (!descriptor_set_dest) {
     return false;
   }
@@ -1422,7 +1422,7 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
       descriptor_set_source_base =
           command_processor_.AllocateSingleTransientDescriptor(
               VulkanCommandProcessor::SingleTransientDescriptorLayout ::
-                  kStorageBufferCompute);
+                  kStorageBuffer);
       if (!descriptor_set_source_base) {
         return false;
       }
@@ -1511,7 +1511,7 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
       descriptor_set_source_mips =
           command_processor_.AllocateSingleTransientDescriptor(
               VulkanCommandProcessor::SingleTransientDescriptorLayout ::
-                  kStorageBufferCompute);
+                  kStorageBuffer);
       if (!descriptor_set_source_mips) {
         return false;
       }
@@ -2615,7 +2615,7 @@ bool VulkanTextureCache::Initialize() {
   VkDescriptorSetLayout load_descriptor_set_layout_storage_buffer =
       command_processor_.GetSingleTransientDescriptorLayout(
           VulkanCommandProcessor::SingleTransientDescriptorLayout ::
-              kStorageBufferCompute);
+              kStorageBuffer);
   assert_true(load_descriptor_set_layout_storage_buffer != VK_NULL_HANDLE);
   load_descriptor_set_layouts[kLoadDescriptorSetIndexDestination] =
       load_descriptor_set_layout_storage_buffer;
