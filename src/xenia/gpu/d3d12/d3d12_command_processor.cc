@@ -40,6 +40,7 @@ DEFINE_bool(d3d12_bindless, true,
 
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(d3d12_debug);
+DECLARE_bool(readback_memexport);
 DECLARE_bool(gpu_debug_markers);
 DECLARE_bool(submit_on_primary_buffer_end);
 
@@ -3072,6 +3073,12 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
            memexport_ranges_) {
         MarkMemexportPagesWritten(memexport_range.base_address_dwords << 2,
                                   memexport_range.size_bytes);
+      }
+      if (cvars::readback_memexport) {
+        // The CPU may read the exported data without ever observing a fence or
+        // requesting coherency for the range, which is all the deferred await
+        // covers, so wait for the exporting draw here instead.
+        AwaitMemexportForFence();
       }
     }
   }

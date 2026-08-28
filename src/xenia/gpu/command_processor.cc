@@ -113,6 +113,17 @@ DEFINE_bool(
     "GPU");
 
 DEFINE_bool(
+    readback_memexport, false,
+    "Wait for the GPU to finish right after every draw that uses memory "
+    "export, so the exported data is in guest RAM before anything else runs. "
+    "Unlike memexport_await_fences, this also covers CPU readers that never "
+    "observe a fence or request coherency for the range. Fixes stale or torn "
+    "exported data (e.g. LEGO The Lord of the Rings graphical corruption) at "
+    "a performance cost in games that export every frame. Needs "
+    "memexport_enable.",
+    "GPU");
+
+DEFINE_bool(
     precise_interpolation, true,
     "Manually interpolate pixel shader inputs with barycentric coordinates to "
     "exactly match the guest and avoid hardware interpolation precision "
