@@ -3075,10 +3075,34 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                                   memexport_range.size_bytes);
       }
       if (cvars::readback_memexport) {
+        // The device buffer stays stale for host-routed export output (the
+        // pages are marked valid above, so uploads never refresh them), and
+        // consumers the routing detection misses read it. Copy every exported
+        // range across, ordered on the GPU after the exporting draw, so the
+        // device buffer is coherent no matter who reads it.
+        for (const draw_util::MemExportRange& memexport_range :
+             memexport_ranges_) {
+          EnsureMemexportRangeInDeviceBuffer(
+              memexport_range.base_address_dwords << 2,
+              memexport_range.size_bytes);
+        }
         // The CPU may read the exported data without ever observing a fence or
         // requesting coherency for the range, which is all the deferred await
-        // covers, so wait for the exporting draw here instead.
-        AwaitMemexportForFence();
+        // covers, so wait for the exporting draw here. Unconditional rather
+        // than through AwaitMemexportForFence: with no parsed ranges nothing
+        // armed the pending flag, but the shader still exported to guest RAM.
+        AwaitAllQueueOperationsCompletion();
+        memexport_await_pending_ = false;
+        static uint32_t readback_memexport_log_count = 0;
+        if (readback_memexport_log_count < 8 ||
+            !(readback_memexport_log_count % 1024)) {
+          XELOGGPU(
+              "readback_memexport: awaited memexport draw #{} ({} ranges{})",
+              readback_memexport_log_count, memexport_ranges_.size(),
+              memexport_ranges_.empty() ? " - STREAM PARSE MISSED THE EXPORT"
+                                        : "");
+        }
+        ++readback_memexport_log_count;
       }
     }
   }
