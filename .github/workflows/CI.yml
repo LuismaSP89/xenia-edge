@@ -48,8 +48,9 @@ jobs:
     permissions:
       contents: write
     if: |
-      github.repository == 'has207/xenia-edge' &&
-      github.event_name == 'push' &&
+      (github.repository == 'has207/xenia-edge' ||
+       github.repository == 'Forgottenshadow89/xenia-edge') &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/edge'
     steps:
       - name: Checkout repository
@@ -171,4 +172,4 @@ jobs:
           gh release create $tag \
             xenia_edge_linux.AppImage xenia_edge_windows.zip \
             xenia_edge_macos.dmg \
-            --target $GITHUB_SHA -t "xenia_edge" --notes-file release_notes.md
+            --target $GITHUB_SHA -t "xenia_edge (fork: canary TU selection)" --notes-file release_notes.md
