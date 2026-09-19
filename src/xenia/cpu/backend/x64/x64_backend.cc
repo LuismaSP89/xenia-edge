@@ -9,6 +9,7 @@
 
 #include "xenia/cpu/backend/x64/x64_backend.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <utility>
 
@@ -1864,6 +1865,10 @@ void X64Backend::InitializeBackendContext(void* ctx) {
   bctx->stackpoints = AllocStackpoints();
   bctx->current_stackpoint_depth = 0;
   bctx->dynamic_call_cache = nullptr;
+  {
+    auto global_lock = global_critical_region_.Acquire();
+    backend_contexts_.push_back(ctx);
+  }
   bctx->unwind_stackpoint_depth = 0;
   bctx->mxcsr_vmx = DEFAULT_VMX_MXCSR;
   bctx->mxcsr_vmx_daz = DEFAULT_VMX_MXCSR;  // never follows NJM
@@ -1880,8 +1885,31 @@ void X64Backend::DeinitializeBackendContext(void* ctx) {
     delete[] bctx->stackpoints;
     bctx->stackpoints = nullptr;
   }
+  auto global_lock = global_critical_region_.Acquire();
+  backend_contexts_.erase(
+      std::remove(backend_contexts_.begin(), backend_contexts_.end(), ctx),
+      backend_contexts_.end());
+  // InvalidateDynamicCalls walks a registered context's cache under the lock.
   delete[] bctx->dynamic_call_cache;
   bctx->dynamic_call_cache = nullptr;
+}
+
+void X64Backend::InvalidateDynamicCalls(uint32_t start, uint32_t end) {
+  auto global_lock = global_critical_region_.Acquire();
+  for (void* ctx : backend_contexts_) {
+    X64BackendContext* bctx = BackendContextForGuestContext(ctx);
+    if (!bctx->dynamic_call_cache) {
+      continue;
+    }
+    for (uint32_t i = 0; i < kX64DynamicCallCacheSize; ++i) {
+      auto& entry = bctx->dynamic_call_cache[i];
+      if (entry.guest_address >= start && entry.guest_address <= end) {
+        // The lookup only rejects an entry whose host address is zero.
+        entry.host_address = 0;
+        entry.guest_address = UINT32_MAX;
+      }
+    }
+  }
 }
 
 void X64Backend::PrepareForReentry(void* ctx) {

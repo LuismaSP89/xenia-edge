@@ -13,9 +13,11 @@
 #include <atomic>
 #include <cstddef>
 #include <memory>
+#include <vector>
 
 #include "xenia/base/bit_map.h"
 #include "xenia/base/cvar.h"
+#include "xenia/base/mutex.h"
 #include "xenia/cpu/backend/backend.h"
 
 #if XE_PLATFORM_WIN32 == 1
@@ -196,6 +198,7 @@ class X64Backend : public Backend {
   virtual void InitializeBackendContext(void* ctx) override;
   virtual void DeinitializeBackendContext(void* ctx) override;
   virtual void PrepareForReentry(void* ctx) override;
+  virtual void InvalidateDynamicCalls(uint32_t start, uint32_t end) override;
   static X64BackendStackpoint* AllocStackpoints();
   void* CreateStackpointState() override;
   void DestroyStackpointState(void* state) override;
@@ -246,6 +249,11 @@ class X64Backend : public Backend {
   bool ExceptionCallback(Exception* ex);
 
   uintptr_t capstone_handle_ = 0;
+
+  // Every live guest context, so code the guest overwrites can be forgotten on
+  // the threads that cached it rather than only on the one that wrote it.
+  xe::global_critical_region global_critical_region_;
+  std::vector<void*> backend_contexts_;
 
   std::unique_ptr<X64CodeCache> code_cache_;
   uintptr_t emitter_data_ = 0;
