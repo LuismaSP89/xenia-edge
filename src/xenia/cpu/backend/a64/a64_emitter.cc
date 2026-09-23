@@ -1127,23 +1127,23 @@ void A64Emitter::EmitPreemptCheck(uint32_t guest_address) {
       static_cast<uint32_t>(offsetof(ppc::PPCContext, preempt_requested));
   // The thunk returns in Fpu, while the hot path may hold a VMX mode.
   const FPCRMode held_mode = fpcr_mode_;
-  Label& do_yield = AddToTail([&after, flag_offset, held_mode](A64Emitter& e,
-                                                               Label&) {
-    e.strb(e.wzr, ptr(e.x20, flag_offset));
-    // Null until the scheduler starts, and a stale flag can reach here after
-    // it shuts down, so check before calling.
-    e.mov(e.x0,
-          reinterpret_cast<uint64_t>(&xe::cpu::backend::preempt_yield_handler));
-    e.ldr(e.x0, ptr(e.x0));
-    e.cbz(e.x0, after);
-    e.ldr(e.x9, e.BackendCtxPtr(
-                    offsetof(A64BackendContext, guest_to_host_thunk_address)));
-    e.blr(e.x9);
-    if (held_mode != FPCRMode::Unknown && held_mode != FPCRMode::Fpu) {
-      e.ReloadFpcrMode(held_mode);
-    }
-    e.b(after);
-  });
+  Label& do_yield =
+      AddToTail([&after, flag_offset, held_mode](A64Emitter& e, Label&) {
+        e.strb(e.wzr, ptr(e.x20, flag_offset));
+        // Null until the scheduler starts, and a stale flag can reach here
+        // after it shuts down, so check before calling.
+        e.ldr(e.x0, e.BackendCtxPtr(offsetof(A64BackendContext,
+                                             preempt_yield_handler_address)));
+        e.ldr(e.x0, ptr(e.x0));
+        e.cbz(e.x0, after);
+        e.ldr(e.x9, e.BackendCtxPtr(offsetof(A64BackendContext,
+                                             guest_to_host_thunk_address)));
+        e.blr(e.x9);
+        if (held_mode != FPCRMode::Unknown && held_mode != FPCRMode::Fpu) {
+          e.ReloadFpcrMode(held_mode);
+        }
+        e.b(after);
+      });
   if (cvars::log_safepoint_pc && guest_address) {
     // Diagnostic only: costs a materialize + store on every loop back-edge, so
     // it stays off unless a wedge is being chased.
@@ -1316,8 +1316,9 @@ void A64Emitter::EnsureSynchronizedGuestAndHostStack() {
     // instead of here because adr's ±1 MiB range can't span body+tail in
     // large functions.
     //   x8 = return address (where to resume after fixup)
-    e.mov(e.x10, reinterpret_cast<uint64_t>(
-                     e.backend()->synchronize_guest_and_host_stack_helper()));
+    e.ldr(e.x10, e.BackendCtxPtr(offsetof(
+                     A64BackendContext,
+                     synchronize_guest_and_host_stack_helper_address)));
     e.br(e.x10);
   });
   adr(x8, return_from_sync);
