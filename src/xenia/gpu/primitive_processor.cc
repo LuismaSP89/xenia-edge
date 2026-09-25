@@ -785,10 +785,14 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
       // cache behavior depends on runtime configuration and state.
       trace_writer_.WriteMemoryRead(guest_index_base,
                                     guest_index_buffer_needed_bytes);
+      bool gpu_written = PrepareGuestIndicesForHostRead(
+          guest_index_base, guest_index_buffer_needed_bytes);
       CacheTransaction cache_transaction(
-          *this, CacheKey(guest_index_base, guest_draw_vertex_count,
-                          guest_index_format, guest_index_endian,
-                          guest_primitive_reset_enabled, guest_primitive_type));
+          *this,
+          CacheKey(guest_index_base, guest_draw_vertex_count,
+                   guest_index_format, guest_index_endian,
+                   guest_primitive_reset_enabled, guest_primitive_type),
+          !gpu_written);
       if (cache_transaction.GetFoundResult()) {
         cacheable = *cache_transaction.GetFoundResult();
       } else {
@@ -951,12 +955,16 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
             // Example of 16-bit reset index replacement: 415607D4.
             trace_writer_.WriteMemoryRead(guest_index_base,
                                           guest_index_buffer_needed_bytes);
+            bool gpu_written = PrepareGuestIndicesForHostRead(
+                guest_index_base, guest_index_buffer_needed_bytes);
             // Not specifying the primitive type in the cache key because not
             // replacing it, only the reset index in a type-independent way.
             CacheTransaction cache_transaction(
-                *this, CacheKey(guest_index_base, guest_draw_vertex_count,
-                                guest_index_format, guest_index_endian,
-                                guest_primitive_reset_enabled));
+                *this,
+                CacheKey(guest_index_base, guest_draw_vertex_count,
+                         guest_index_format, guest_index_endian,
+                         guest_primitive_reset_enabled),
+                !gpu_written);
             if (cache_transaction.GetFoundResult()) {
               cacheable = *cache_transaction.GetFoundResult();
             } else {
@@ -1009,12 +1017,16 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
           // because cache behavior depends on runtime configuration and state.
           trace_writer_.WriteMemoryRead(guest_index_base,
                                         guest_index_buffer_needed_bytes);
+          bool gpu_written = PrepareGuestIndicesForHostRead(
+              guest_index_base, guest_index_buffer_needed_bytes);
           // Not specifying the primitive type in the cache key because not
           // replacing it, only the reset index in a type-independent way.
           CacheTransaction cache_transaction(
-              *this, CacheKey(guest_index_base, guest_draw_vertex_count,
-                              guest_index_format, guest_index_endian,
-                              guest_primitive_reset_enabled));
+              *this,
+              CacheKey(guest_index_base, guest_draw_vertex_count,
+                       guest_index_format, guest_index_endian,
+                       guest_primitive_reset_enabled),
+              !gpu_written);
           if (cache_transaction.GetFoundResult()) {
             cacheable = *cache_transaction.GetFoundResult();
           } else {
@@ -1519,10 +1531,10 @@ uint32_t PrimitiveProcessor::GetMultiPrimitiveHostIndexCountAndRanges(
 }
 
 PrimitiveProcessor::CacheTransaction::CacheTransaction(
-    PrimitiveProcessor& processor, CacheKey key)
+    PrimitiveProcessor& processor, CacheKey key, bool cacheable)
     : processor_(processor), key_(key) {
   assert_zero(processor_.cache_currently_processing_size_bytes_);
-  if (cvars::primitive_processor_cache_min_indices < 0 ||
+  if (!cacheable || cvars::primitive_processor_cache_min_indices < 0 ||
       key_.count < uint32_t(cvars::primitive_processor_cache_min_indices)) {
     // Don't cache if the vertex count is too small.
     key_.key = 0;

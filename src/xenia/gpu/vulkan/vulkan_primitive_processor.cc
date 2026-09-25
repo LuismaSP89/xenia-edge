@@ -226,6 +226,11 @@ void* VulkanPrimitiveProcessor::RequestHostConvertedIndexBufferForCurrentFrame(
   return mapping;
 }
 
+bool VulkanPrimitiveProcessor::PrepareGuestIndicesForHostRead(uint32_t base,
+                                                              uint32_t length) {
+  return command_processor_.AwaitMemexportForHostIndexRead(base, length);
+}
+
 }  // namespace vulkan
 }  // namespace gpu
 }  // namespace xe

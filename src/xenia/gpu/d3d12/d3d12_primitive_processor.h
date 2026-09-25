@@ -64,6 +64,8 @@ class D3D12PrimitiveProcessor final : public PrimitiveProcessor {
       uint32_t coalignment_original_address,
       size_t& backend_handle_out) override;
 
+  bool PrepareGuestIndicesForHostRead(uint32_t base, uint32_t length) override;
+
  private:
   D3D12CommandProcessor& command_processor_;
 

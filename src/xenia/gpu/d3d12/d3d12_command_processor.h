@@ -117,6 +117,12 @@ class D3D12CommandProcessor final : public CommandProcessor {
     queue_operations_done_since_submission_signal_ = true;
   }
 
+  // For the primitive processor, before it reads guest indices on the host
+  // while a draw is being set up: waits for export output that may land in the
+  // range, and reopens the submission the wait ended. Returns whether export
+  // output may land there.
+  bool AwaitMemexportForHostIndexRead(uint32_t base, uint32_t length);
+
   // Debug marker methods - public so subsystems can annotate their operations.
   void PushDebugMarker(const char* format, ...);
   void PopDebugMarker();

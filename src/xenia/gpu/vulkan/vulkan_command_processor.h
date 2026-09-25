@@ -202,6 +202,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
   uint64_t GetCurrentFrame() const { return frame_current_; }
   uint64_t GetCompletedFrame() const { return frame_completed_; }
 
+  // For the primitive processor, before it reads guest indices on the host
+  // while a draw is being set up: waits for export output that may land in the
+  // range, and reopens the submission the wait ended. Returns whether export
+  // output may land there.
+  bool AwaitMemexportForHostIndexRead(uint32_t base, uint32_t length);
+
   // Submission must be open to insert barriers. If no pipeline stages access
   // the resource in a synchronization scope, the stage masks should be 0 (top /
   // bottom of pipe should be specified only if explicitly needed). Returning

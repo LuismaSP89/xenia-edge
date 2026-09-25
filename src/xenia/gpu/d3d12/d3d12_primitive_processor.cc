@@ -167,6 +167,11 @@ void* D3D12PrimitiveProcessor::RequestHostConvertedIndexBufferForCurrentFrame(
   return mapping;
 }
 
+bool D3D12PrimitiveProcessor::PrepareGuestIndicesForHostRead(uint32_t base,
+                                                             uint32_t length) {
+  return command_processor_.AwaitMemexportForHostIndexRead(base, length);
+}
+
 }  // namespace d3d12
 }  // namespace gpu
 }  // namespace xe

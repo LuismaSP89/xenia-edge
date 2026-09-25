@@ -323,6 +323,15 @@ class PrimitiveProcessor {
       xenos::IndexFormat format, uint32_t index_count, bool coalign_for_simd,
       uint32_t coalignment_original_address, size_t& backend_handle_out) = 0;
 
+  // Called before the guest indices at [base, base + length) are read on the
+  // host. Returns true if the GPU may have written them (memexport output), in
+  // which case the backend has waited for those writes to reach guest RAM, and
+  // the conversion must not be cached - GPU writes don't trip the invalidation
+  // watch that would drop the entry.
+  virtual bool PrepareGuestIndicesForHostRead(uint32_t base, uint32_t length) {
+    return false;
+  }
+
  private:
 #if XE_GPU_PRIMITIVE_PROCESSOR_SIMD_SIZE
 #if XE_ARCH_AMD64
@@ -882,7 +891,10 @@ class PrimitiveProcessor {
   // possibility replace existing entries.
   class CacheTransaction final {
    public:
-    CacheTransaction(PrimitiveProcessor& processor, CacheKey key);
+    // cacheable false makes the transaction a no-op, for a range the GPU may
+    // write without invalidating the cache.
+    CacheTransaction(PrimitiveProcessor& processor, CacheKey key,
+                     bool cacheable = true);
     const CachedResult* GetFoundResult() const {
       return result_type_ == ResultType::kExisting ? &result_ : nullptr;
     }

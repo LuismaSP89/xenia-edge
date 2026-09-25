@@ -63,6 +63,8 @@ class VulkanPrimitiveProcessor final : public PrimitiveProcessor {
       uint32_t coalignment_original_address,
       size_t& backend_handle_out) override;
 
+  bool PrepareGuestIndicesForHostRead(uint32_t base, uint32_t length) override;
+
  private:
   VulkanCommandProcessor& command_processor_;
 

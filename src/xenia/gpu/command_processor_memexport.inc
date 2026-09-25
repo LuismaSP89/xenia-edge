@@ -69,6 +69,24 @@ void AwaitMemexportForCoherency(uint32_t base_bytes, uint32_t size_bytes) {
   FlushMemexportStagingReadback();
 }
 
+// Same, for the host itself about to read guest data in the range - the
+// primitive processor converting indices on the CPU, ahead of the GPU that
+// exports them (see PrimitiveProcessor::PrepareGuestIndicesForHostRead).
+// Returns whether export output may land in the range at all, so the caller
+// knows not to cache what it reads: the GPU writes it without tripping the
+// CPU-side invalidation watches.
+bool AwaitMemexportForHostRead(uint32_t base_bytes, uint32_t size_bytes) {
+  if (!IsMemexportRange(base_bytes, size_bytes)) {
+    return false;
+  }
+  if (memexport_await_pending_) {
+    memexport_await_pending_ = false;
+    AwaitAllQueueOperationsCompletion();
+    FlushMemexportStagingReadback();
+  }
+  return true;
+}
+
 // Clears memexport marks for a range a resolve just wrote, so its device-buffer
 // output is no longer treated as memexport (host buffer) data. Clearing rounds
 // inward: a page straddling the edge holds both this range's data and

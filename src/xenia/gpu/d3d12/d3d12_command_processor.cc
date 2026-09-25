@@ -2642,8 +2642,11 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     route_to_host =
         memexport_used ||
         (any_memexport_pages_written_ &&
-         ((primitive_processing_result.index_buffer_type ==
-               PrimitiveProcessor::ProcessedIndexBufferType::kGuestDMA &&
+         (((primitive_processing_result.index_buffer_type ==
+                PrimitiveProcessor::ProcessedIndexBufferType::kGuestDMA ||
+            primitive_processing_result.index_buffer_type ==
+                PrimitiveProcessor::ProcessedIndexBufferType::
+                    kHostBuiltinForDMA) &&
            IsMemexportRange(
                primitive_processing_result.guest_index_base,
                primitive_processing_result.guest_draw_vertex_count *
@@ -3281,6 +3284,17 @@ void D3D12CommandProcessor::StageMemexportReadback() {
     // The fence and coherency waits are driven by the page marks.
     MarkMemexportPagesWritten(base_bytes, size_bytes);
   }
+}
+
+bool D3D12CommandProcessor::AwaitMemexportForHostIndexRead(uint32_t base,
+                                                           uint32_t length) {
+  if (!AwaitMemexportForHostRead(base, length)) {
+    return false;
+  }
+  // The wait ends the submission the draw is being recorded into, and the
+  // primitive processor goes on to request the indices in the shared memory.
+  BeginSubmission(true);
+  return true;
 }
 
 void D3D12CommandProcessor::FlushMemexportStagingReadback() {
