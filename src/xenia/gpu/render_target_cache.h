@@ -721,6 +721,9 @@ class RenderTargetCache {
   TraceWriter* trace_writer_;
   uint32_t draw_resolution_scale_x_;
   uint32_t draw_resolution_scale_y_;
+  // Tile-aligned pitches from draw_resolution_scale_native_pitches, parsed in
+  // InitializeCommon.
+  std::vector<uint32_t> draw_resolution_scale_native_pitches_;
 
   DrawExtentEstimator draw_extent_estimator_;
 
