@@ -256,6 +256,8 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
     kPointList,
     kRectangleList,
     kQuadList,
+    // Lines expanded to 1 guest pixel wide for resolution-scaled draws.
+    kLineList,
   };
 
   enum class PipelineCullMode : uint32_t {
@@ -312,28 +314,28 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
     // xenos::TessellationMode for a domain shader.
     uint32_t primitive_topology_type_or_tessellation_mode : 2;  // 4
     // Zero for non-kVertex host_vertex_shader_type.
-    PipelineGeometryShader geometry_shader : 2;       // 6
-    uint32_t fill_mode_wireframe : 1;                 // 7
-    PipelineCullMode cull_mode : 2;                   // 9
-    uint32_t front_counter_clockwise : 1;             // 10
-    uint32_t depth_clip : 1;                          // 11
-    xenos::MsaaSamples host_msaa_samples : 2;         // 13
-    xenos::DepthRenderTargetFormat depth_format : 1;  // 14
-    xenos::CompareFunction depth_func : 3;            // 17
-    uint32_t depth_write : 1;                         // 18
-    uint32_t stencil_enable : 1;                      // 19
-    uint32_t stencil_read_mask : 8;                   // 27
+    PipelineGeometryShader geometry_shader : 3;       // 7
+    uint32_t fill_mode_wireframe : 1;                 // 8
+    PipelineCullMode cull_mode : 2;                   // 10
+    uint32_t front_counter_clockwise : 1;             // 11
+    uint32_t depth_clip : 1;                          // 12
+    xenos::MsaaSamples host_msaa_samples : 2;         // 14
+    xenos::DepthRenderTargetFormat depth_format : 1;  // 15
+    xenos::CompareFunction depth_func : 3;            // 18
+    uint32_t depth_write : 1;                         // 19
+    uint32_t stencil_enable : 1;                      // 20
+    uint32_t stencil_read_mask : 8;                   // 28
     // Native draw (scale threshold), keeps slope-scale unscaled.
-    uint32_t resolution_scale_native : 1;  // 28
+    uint32_t resolution_scale_native : 1;  // 29
     // ROV only - selects the depth-only pixel shader, which is specialized
     // for the guest count. host_msaa_samples can't, guest 2x is rasterized as
     // host 4x there.
-    xenos::MsaaSamples guest_msaa_samples : 2;  // 30
+    xenos::MsaaSamples guest_msaa_samples : 2;  // 31
     // Selects the counting depth-only pixel shader when there's no guest PS.
     // RTV: hybrid occlusion query draw (shader counting for Total).
     // ROV: VIZ survey draw (occlusion_query_viz), ZPass as a flag.
     // Hybrid queries are RTV only, so the two never meet.
-    uint32_t counting_depth_only : 1;  // 31
+    uint32_t counting_depth_only : 1;  // 32
 
     uint32_t stencil_write_mask : 8;                   // 8
     xenos::StencilOp stencil_front_fail_op : 3;        // 11
@@ -353,8 +355,9 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
     // again for the constant-alpha blend state; then again for
     // guest_msaa_samples changing the bitfield layout; then again for
     // zpd_total; then again for it also covering VIZ surveys; then again for
-    // dropping use_mesa_dxil.
-    static constexpr uint32_t kVersion = 0x20261001;
+    // dropping use_mesa_dxil; then again for the line geometry shader
+    // widening geometry_shader.
+    static constexpr uint32_t kVersion = 0x20261002;
   });
 
   XEPACKEDSTRUCT(PipelineStoredDescription, {
@@ -397,7 +400,7 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
   union GeometryShaderKey {
     uint32_t key;
     struct {
-      PipelineGeometryShader type : 2;
+      PipelineGeometryShader type : 3;
       uint32_t interpolator_count : 5;
       uint32_t user_clip_plane_count : 3;
       uint32_t user_clip_plane_cull : 1;
