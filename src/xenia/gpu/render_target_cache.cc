@@ -9,9 +9,12 @@
 
 #include "xenia/gpu/render_target_cache.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/cvar.h"
@@ -166,6 +169,16 @@ DEFINE_uint32(
     "is compared after alignment to 80 pixel EDRAM tiles, so prefer "
     "conservative values, only as high as the broken effects need.\n"
     "Host render targets only.",
+    "GPU");
+DEFINE_string(
+    draw_resolution_scale_native_pitches, "",
+    "Comma-separated list of surface pitches in pixels whose render targets "
+    "are kept at native resolution regardless of "
+    "draw_resolution_scale_threshold, for surfaces above the threshold that "
+    "still break when upscaled (lookup tables drawn with lines or points, "
+    "which stay one host pixel wide, for instance). Each pitch is aligned "
+    "up to 80 pixel EDRAM tiles like the threshold. Host render targets "
+    "only.",
     "GPU");
 DEFINE_bool(
     gamma_render_target_as_unorm16, true,
@@ -565,15 +578,63 @@ void RenderTargetCache::InitializeCommon() {
       std::forward_as_tuple(xenos::kEdramTileCount, RenderTargetKey(),
                             RenderTargetKey(), RenderTargetKey()));
 
-  if (cvars::draw_resolution_scale_threshold) {
+  draw_resolution_scale_native_pitches_.clear();
+  {
+    const std::string& native_pitches =
+        cvars::draw_resolution_scale_native_pitches;
+    size_t token_start = 0;
+    while (token_start < native_pitches.size()) {
+      size_t token_end = native_pitches.find(',', token_start);
+      if (token_end == std::string::npos) {
+        token_end = native_pitches.size();
+      }
+      std::string token =
+          native_pitches.substr(token_start, token_end - token_start);
+      token_start = token_end + 1;
+      char* parse_end = nullptr;
+      unsigned long pitch_pixels = std::strtoul(token.c_str(), &parse_end, 0);
+      while (parse_end && *parse_end == ' ') {
+        ++parse_end;
+      }
+      if (token.empty() || !parse_end || *parse_end || !pitch_pixels) {
+        if (!token.empty()) {
+          XELOGW(
+              "draw_resolution_scale_native_pitches: ignoring the invalid "
+              "pitch '{}'",
+              token);
+        }
+        continue;
+      }
+      // Compared to the tile-aligned pitch, so align like the threshold.
+      uint32_t pitch_pixels_tile_aligned = uint32_t(
+          xe::round_up(uint32_t(pitch_pixels), xenos::kEdramTileWidthSamples));
+      if (std::find(draw_resolution_scale_native_pitches_.cbegin(),
+                    draw_resolution_scale_native_pitches_.cend(),
+                    pitch_pixels_tile_aligned) ==
+          draw_resolution_scale_native_pitches_.cend()) {
+        draw_resolution_scale_native_pitches_.push_back(
+            pitch_pixels_tile_aligned);
+      }
+    }
+  }
+
+  if (cvars::draw_resolution_scale_threshold ||
+      !draw_resolution_scale_native_pitches_.empty()) {
     if (GetPath() != Path::kHostRenderTargets) {
       XELOGW(
-          "draw_resolution_scale_threshold is only supported by the host "
-          "render target path - ignoring");
+          "draw_resolution_scale_threshold / "
+          "draw_resolution_scale_native_pitches are only supported by the "
+          "host render target path - ignoring");
     } else if (!IsDrawResolutionScaled()) {
       XELOGW(
-          "draw_resolution_scale_threshold has no effect without "
+          "draw_resolution_scale_threshold / "
+          "draw_resolution_scale_native_pitches have no effect without "
           "draw_resolution_scale_x/y above 1 - ignoring");
+    } else if (!draw_resolution_scale_native_pitches_.empty()) {
+      XELOGI(
+          "draw_resolution_scale_native_pitches: keeping {} pitch class(es) "
+          "at native resolution",
+          draw_resolution_scale_native_pitches_.size());
     }
   }
 }
@@ -643,8 +704,8 @@ void RenderTargetCache::BeginFrame() { ResetAccumulatedRenderTargets(); }
 bool RenderTargetCache::IsScaleNativeForPitch(
     uint32_t pitch_tiles_at_32bpp, xenos::MsaaSamples msaa_samples) const {
   uint32_t threshold = cvars::draw_resolution_scale_threshold;
-  if (!threshold || !IsDrawResolutionScaled() ||
-      GetPath() != Path::kHostRenderTargets) {
+  if ((!threshold && draw_resolution_scale_native_pitches_.empty()) ||
+      !IsDrawResolutionScaled() || GetPath() != Path::kHostRenderTargets) {
     return false;
   }
   // Pitch is the only guest surface dimension that's reliably known since host
@@ -654,8 +715,17 @@ bool RenderTargetCache::IsScaleNativeForPitch(
   // color always land in the same class.
   uint32_t pitch_pixels_tile_aligned =
       RenderTargetKey::GetWidth(pitch_tiles_at_32bpp, msaa_samples);
-  return pitch_pixels_tile_aligned != 0 &&
-         pitch_pixels_tile_aligned <= threshold;
+  if (!pitch_pixels_tile_aligned) {
+    return false;
+  }
+  if (threshold && pitch_pixels_tile_aligned <= threshold) {
+    return true;
+  }
+  // Explicitly listed pitches above the threshold.
+  return std::find(draw_resolution_scale_native_pitches_.cbegin(),
+                   draw_resolution_scale_native_pitches_.cend(),
+                   pitch_pixels_tile_aligned) !=
+         draw_resolution_scale_native_pitches_.cend();
 }
 
 bool RenderTargetCache::IsDrawScaleNative() const {
