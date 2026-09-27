@@ -917,7 +917,7 @@ void EmulatorWindow::OnEmulatorInitialized() {
       } else {
         execv(executable_path.c_str(), const_cast<char**>(argv.data()));
       }
-      std::exit(1);
+      _exit(1);
     } else if (pid < 0) {
       XELOGE("Failed to fork process");
       return;
@@ -3388,7 +3388,7 @@ void EmulatorWindow::LaunchTitleInNewProcess(
 
     // If exec returns, it failed
     XELOGE("Failed to execute: {}", executable_path.string());
-    std::exit(1);
+    _exit(1);
   } else if (pid < 0) {
     // Fork failed
     XELOGE("Failed to fork process");
