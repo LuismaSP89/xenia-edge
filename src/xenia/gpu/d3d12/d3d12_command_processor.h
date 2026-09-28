@@ -420,6 +420,8 @@ class D3D12CommandProcessor final : public CommandProcessor {
     uint64_t key;
     uint32_t address;
     uint32_t length;
+    // Where address lies in the slot's buffer.
+    uint32_t offset;
   };
   std::vector<MemexportStagedRange> memexport_staged_;
 

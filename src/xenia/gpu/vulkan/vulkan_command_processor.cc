@@ -3450,6 +3450,14 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   if (memexport_used_pixel) {
     draw_util::AddMemExportRanges(regs, *pixel_shader, memexport_ranges_);
   }
+  // Exports land in guest RAM through the host buffer.
+  if (cvars::memexport_enable &&
+      shared_memory_host_and_edram_descriptor_set_ != VK_NULL_HANDLE) {
+    for (const draw_util::MemExportRange& memexport_range : memexport_ranges_) {
+      ProvideResolveOutputForGpuWrite(memexport_range.base_address_dwords << 2,
+                                      memexport_range.size_bytes);
+    }
+  }
 
   uint32_t ps_param_gen_pos = UINT32_MAX;
   uint32_t interpolator_mask =
@@ -4275,7 +4283,7 @@ void VulkanCommandProcessor::StageMemexportReadback() {
     std::erase_if(memexport_staged_, [key](const MemexportStagedRange& staged) {
       return staged.key == key;
     });
-    memexport_staged_.push_back({key, base_bytes, size_bytes});
+    memexport_staged_.push_back({key, base_bytes, size_bytes, 0});
     // The fence and coherency waits are driven by the page marks.
     MarkMemexportPagesWritten(base_bytes, size_bytes);
   }
@@ -4306,7 +4314,7 @@ void VulkanCommandProcessor::FlushMemexportStagingReadback() {
     }
     const ReadbackStagingBuffer& staging = slot->buffer;
     InvalidateReadbackStaging(staging);
-    ReadbackStagingToGuestRam(staging, staged.address, length);
+    ReadbackStagingToGuestRam(staging, staged.offset, staged.address, length);
   }
   memexport_staged_.clear();
 }

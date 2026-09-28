@@ -38,6 +38,9 @@
 //     zero-copy the resolve wrote guest RAM itself, so it only waits. Called
 //     under resolve_read_mutex_, so it may neither take the global lock nor
 //     need the GPU thread.
+//   bool EnsureMemexportRangeInDeviceBuffer(uint32_t base, uint32_t size)
+//     Copies memexport output in the host buffer into the shared memory buffer.
+// And include command_processor_readback_staging.inc.
 
 // How much of a guest range is committed and writable, so copying GPU output
 // back into it is safe. Writing past that corrupts memory the guest never
@@ -103,6 +106,47 @@ void MarkResolvePagesRead(uint32_t physical_address, uint32_t length) {
 // wrote there, not under it.
 void PrepareResolvePagesForWrite(uint32_t address, uint32_t length) {
   ProvideResolveOutput(address, length);
+}
+
+// Before recording a draw that writes guest RAM directly, so a later fault copy
+// of older resolve output can't land over it. May wait for the GPU.
+void ProvideResolveOutputForGpuWrite(uint32_t address, uint32_t length) {
+  if (!resolve_page_owners_ || !length ||
+      address >= SharedMemory::kBufferSize) {
+    return;
+  }
+  length = std::min(length, SharedMemory::kBufferSize - address);
+  // Only submitted resolves can be copied.
+  if (resolve_unsubmitted_owner_ &&
+      HasUnsubmittedResolveOutput(address, length)) {
+    EndResolveSubmission();
+  }
+  ProvideResolveOutput(address, length);
+}
+
+// Whether an unsubmitted resolve owns uncopied output in these pages.
+bool HasUnsubmittedResolveOutput(uint32_t address, uint32_t length) {
+  const uint32_t page_count = SharedMemory::kBufferSize >> 12;
+  uint32_t first_page = address >> 12;
+  uint32_t last_page = std::min((address + length - 1) >> 12, page_count - 1);
+  uint64_t submitted = GetResolveSubmittedThrough();
+  std::lock_guard<std::mutex> lock(resolve_read_mutex_);
+  uint64_t last_owner_key = 0;
+  for (uint32_t page = first_page; page <= last_page; ++page) {
+    uint64_t owner_key =
+        resolve_page_owners_[page].load(std::memory_order_relaxed);
+    if (!owner_key || owner_key == last_owner_key) {
+      continue;
+    }
+    last_owner_key = owner_key;
+    auto owner_it = resolve_owners_.find(owner_key);
+    if (owner_it != resolve_owners_.end() && owner_it->second.copyable &&
+        !owner_it->second.in_guest_ram &&
+        owner_it->second.submission > submitted) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // When the host is about to make these pages' contents irrelevant, or already
@@ -202,6 +246,13 @@ void CopyPackedRangesToGuestRam(
 // submission, for ProvideResolveOutput. is_scaled means its output is not in
 // the shared memory buffer, so it can't be copied.
 void NoteResolveForReadback(uint32_t address, uint32_t length, bool is_scaled) {
+  if (!is_scaled) {
+    DropStagedMemexportOutput(address, length);
+    // Before this resolve takes the pages over.
+    uint32_t end = address + length;
+    PullMemexportEdgeBytes(address & ~uint32_t(4095), address);
+    PullMemexportEdgeBytes(end, (end + 4095) & ~uint32_t(4095));
+  }
   uint64_t resolve_key = MakeReadbackResolveKey(address, length);
   bool read_before = TakeResolveRead(resolve_key);
   // A later read is of this resolve's output, not what it replaces.
@@ -234,6 +285,28 @@ void NoteResolveForReadback(uint32_t address, uint32_t length, bool is_scaled) {
   if (ResolveReadRecently(resolve_key, read_before)) {
     resolve_submit_requested_ = true;
   }
+}
+
+// A fault copy takes whole pages from the shared memory buffer, so export
+// output in the host buffer sharing a resolve's edge page is copied there
+// first, unless an uncopied resolve owns the page and that buffer is current.
+void PullMemexportEdgeBytes(uint32_t start, uint32_t end) {
+  if (start >= end || !IsMemexportRange(start, end - start)) {
+    return;
+  }
+  if (resolve_page_owners_) {
+    uint64_t owner_key =
+        resolve_page_owners_[start >> 12].load(std::memory_order_relaxed);
+    if (owner_key) {
+      std::lock_guard<std::mutex> lock(resolve_read_mutex_);
+      auto owner_it = resolve_owners_.find(owner_key);
+      if (owner_it != resolve_owners_.end() && owner_it->second.copyable &&
+          !owner_it->second.in_guest_ram) {
+        return;
+      }
+    }
+  }
+  EnsureMemexportRangeInDeviceBuffer(start, end - start);
 }
 
 // Under resolve_read_mutex_, with the table full. Output already copied, or
