@@ -1652,3 +1652,11 @@ msgstr "Xenia 基于 %s 分发"
 #: src/xenia/ui/game_info_panel_wx.cc:212
 msgid "Content"
 msgstr "内容"
+
+#: src/xenia/app/emulator_window.cc:405
+msgid "Alternate Guitar"
+msgstr "替代吉他"
+
+#: src/xenia/app/emulator_window.cc:407
+msgid "Bass Guitar"
+msgstr "贝斯"

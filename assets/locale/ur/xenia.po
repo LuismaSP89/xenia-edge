@@ -1657,3 +1657,11 @@ msgstr "Xenia %s کے تحت تقسیم کی جاتی ہے"
 #: src/xenia/ui/game_info_panel_wx.cc:212
 msgid "Content"
 msgstr "مواد"
+
+#: src/xenia/app/emulator_window.cc:405
+msgid "Alternate Guitar"
+msgstr "متبادل گٹار"
+
+#: src/xenia/app/emulator_window.cc:407
+msgid "Bass Guitar"
+msgstr "بیس گٹار"

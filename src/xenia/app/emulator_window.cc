@@ -382,11 +382,10 @@ constexpr int kToolbarIconSize = 32;
 // Smaller than the tool buttons — informative-only, paired with the slider.
 constexpr int kAudioIconSize = 24;
 
-// XINPUT_DEVSUBTYPE_* values offered as override choices. The alternate
-// guitar (0x07) and bass guitar (0x0B) variants collapse onto the single
-// "Guitar" entry (0x06) since the guest treats them equivalently.
-constexpr uint8_t kSelectableSubtypes[] = {0x01, 0x02, 0x03, 0x04,
-                                           0x05, 0x06, 0x08, 0x13};
+// XINPUT_DEVSUBTYPE_* values offered as override choices. Games may check for a
+// specific guitar variant, so all three are listed.
+constexpr uint8_t kSelectableSubtypes[] = {0x01, 0x02, 0x03, 0x04, 0x05,
+                                           0x06, 0x07, 0x0B, 0x08, 0x13};
 
 wxString SubtypeName(uint8_t subtype) {
   switch (subtype) {
@@ -401,9 +400,11 @@ wxString SubtypeName(uint8_t subtype) {
     case 0x05:
       return _("Dance Pad");
     case 0x06:
-    case 0x07:
-    case 0x0B:
       return _("Guitar");
+    case 0x07:
+      return _("Alternate Guitar");
+    case 0x0B:
+      return _("Bass Guitar");
     case 0x08:
       return _("Drum Kit");
     case 0x13:
@@ -411,6 +412,15 @@ wxString SubtypeName(uint8_t subtype) {
     default:
       return _("Gamepad");
   }
+}
+
+// Subtype the guest sees for a bound device.
+uint8_t EffectiveSubtype(uint8_t detected, uint8_t native_subtype,
+                         const hid::InputSystem::SlotBinding& binding) {
+  if (binding.subtype_override) {
+    return binding.subtype_override;
+  }
+  return native_subtype ? native_subtype : detected;
 }
 
 // About dialog with clickable links, which the stock wxAboutBox
@@ -2527,9 +2537,8 @@ void EmulatorWindow::RefreshControllerToolbar() {
     } else {
       // User override takes precedence over the device's detected subtype.
       const auto& binding = emulator_->input_system()->GetSlotBinding(slot);
-      const uint8_t effective = binding.subtype_override != 0
-                                    ? binding.subtype_override
-                                    : bound->info.subtype;
+      const uint8_t effective = EffectiveSubtype(
+          bound->info.subtype, bound->info.native_subtype, binding);
       switch (effective) {
         case 0x02:  // WHEEL
           bundle = &s.controller_wheel_bundle;
@@ -2623,21 +2632,25 @@ void EmulatorWindow::PopulateControllersMenu(ui::MenuItem* parent) {
       // "Type: <effective>" submenu lets the user override the subtype the
       // guest sees (e.g. expose a regular pad as a wheel or drum kit).
       uint8_t detected = 0x01;
+      uint8_t native_subtype = 0;
       for (const auto& dev : devices) {
         if (dev.bound_slot == static_cast<int>(slot)) {
           detected = dev.info.subtype;
+          native_subtype = dev.info.native_subtype;
           break;
         }
       }
-      const uint8_t effective =
-          binding.subtype_override != 0 ? binding.subtype_override : detected;
-      wxString type_label =
-          wxString::Format(_("Type: %s"), SubtypeName(effective));
+      wxString type_label = wxString::Format(
+          _("Type: %s"),
+          SubtypeName(EffectiveSubtype(detected, native_subtype, binding)));
       auto type_entry =
           ui::WxMenuItem::Create(ui::MenuItem::Type::kPopup, type_label);
 
-      wxString auto_label =
-          wxString::Format(_("Auto (%s)"), SubtypeName(detected));
+      // Auto reads a device with a native mode through XInput, an override
+      // through SDL's mapping.
+      wxString auto_label = wxString::Format(
+          _("Auto (%s)"),
+          native_subtype ? wxString(wxT("XInput")) : SubtypeName(detected));
       if (binding.subtype_override == 0) {
         auto_label = wxT("✓ ") + auto_label;
       }

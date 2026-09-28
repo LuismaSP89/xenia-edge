@@ -1663,3 +1663,11 @@ msgstr "Ipinamamahagi ang Xenia sa ilalim ng %s"
 #: src/xenia/ui/game_info_panel_wx.cc:212
 msgid "Content"
 msgstr "Content"
+
+#: src/xenia/app/emulator_window.cc:405
+msgid "Alternate Guitar"
+msgstr "Alternatibong Gitara"
+
+#: src/xenia/app/emulator_window.cc:407
+msgid "Bass Guitar"
+msgstr "Bass Guitar"
