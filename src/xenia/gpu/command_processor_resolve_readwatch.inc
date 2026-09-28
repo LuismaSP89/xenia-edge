@@ -249,9 +249,18 @@ void NoteResolveForReadback(uint32_t address, uint32_t length, bool is_scaled) {
   if (!is_scaled) {
     DropStagedMemexportOutput(address, length);
     // Before this resolve takes the pages over.
+    uint32_t first_page_base = address & ~uint32_t(4095);
     uint32_t end = address + length;
-    PullMemexportEdgeBytes(address & ~uint32_t(4095), address);
-    PullMemexportEdgeBytes(end, (end + 4095) & ~uint32_t(4095));
+    uint32_t last_page_end = (end + 4095) & ~uint32_t(4095);
+    bool first_pulled = PullMemexportEdgeBytes(first_page_base, address);
+    bool last_pulled = PullMemexportEdgeBytes(end, last_page_end);
+    // Pulled pages are current in the shared memory buffer, not the host one.
+    if (first_pulled) {
+      ClearMemexportPages(first_page_base, 4096);
+    }
+    if (last_pulled) {
+      ClearMemexportPages(last_page_end - 4096, 4096);
+    }
   }
   uint64_t resolve_key = MakeReadbackResolveKey(address, length);
   bool read_before = TakeResolveRead(resolve_key);
@@ -290,9 +299,10 @@ void NoteResolveForReadback(uint32_t address, uint32_t length, bool is_scaled) {
 // A fault copy takes whole pages from the shared memory buffer, so export
 // output in the host buffer sharing a resolve's edge page is copied there
 // first, unless an uncopied resolve owns the page and that buffer is current.
-void PullMemexportEdgeBytes(uint32_t start, uint32_t end) {
+// Returns whether it copied.
+bool PullMemexportEdgeBytes(uint32_t start, uint32_t end) {
   if (start >= end || !IsMemexportRange(start, end - start)) {
-    return;
+    return false;
   }
   if (resolve_page_owners_) {
     uint64_t owner_key =
@@ -302,11 +312,11 @@ void PullMemexportEdgeBytes(uint32_t start, uint32_t end) {
       auto owner_it = resolve_owners_.find(owner_key);
       if (owner_it != resolve_owners_.end() && owner_it->second.copyable &&
           !owner_it->second.in_guest_ram) {
-        return;
+        return false;
       }
     }
   }
-  EnsureMemexportRangeInDeviceBuffer(start, end - start);
+  return EnsureMemexportRangeInDeviceBuffer(start, end - start);
 }
 
 // Under resolve_read_mutex_, with the table full. Output already copied, or

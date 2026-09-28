@@ -227,13 +227,15 @@ class VulkanCommandProcessor final : public CommandProcessor {
 
   // If [base_bytes, base_bytes + size_bytes) holds memexport output (which
   // under two-buffer routing lives in the host-imported buffer aliasing guest
-  // RAM), copies it into the device-local buffer so a following device-buffer
-  // read - a texture load - sees it. No-op for non-memexport ranges (already in
-  // the device buffer) and when the host buffer is unavailable. Called by the
+  // RAM), copies the pages holding it into the device-local buffer so a
+  // following device-buffer read - a texture load - sees it, or all of the
+  // range with whole_range. No-op for non-memexport ranges (already in the
+  // device buffer) and when the host buffer is unavailable. Called by the
   // texture cache before loading a texture. Ends the render pass.
   // Returns whether it copied, so an upload of the same range can be skipped.
   bool EnsureMemexportRangeInDeviceBuffer(uint32_t base_bytes,
-                                          uint32_t size_bytes);
+                                          uint32_t size_bytes,
+                                          bool whole_range = false);
 
   // If not started yet, begins a render pass from the render target cache.
   // Submission must be open.
@@ -371,6 +373,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
     uint32_t offset;
   };
   std::vector<MemexportStagedRange> memexport_staged_;
+  // For EnsureMemexportRangeInDeviceBuffer.
+  std::vector<VkBufferCopy> memexport_copy_regions_;
 
   void IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                  uint32_t frontbuffer_height) override;
