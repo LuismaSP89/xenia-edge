@@ -328,6 +328,8 @@ namespace {
 // UI back). Returns "-arm64" / "-x86_64" when a switch is needed, or null
 // when default exec already picks the right slice.
 const char* RosettaArchFlagIfSwitchNeeded(bool want_rosetta) {
+  // arch -x86_64 fails outright on an arm64-only bundle.
+  want_rosetta = want_rosetta && ExecutableHasX86_64Slice();
   int translated = 0;
   size_t sz = sizeof(translated);
   // Missing sysctl => assume native; only Rosetta children set this to 1.

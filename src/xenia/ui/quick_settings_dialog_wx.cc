@@ -23,6 +23,7 @@
 #include "xenia/app/emulator_window.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/platform.h"
+#include "xenia/base/system.h"
 #include "xenia/config.h"
 #include "xenia/ui/config_helpers.h"
 
@@ -281,10 +282,12 @@ void QuickSettingsDialog::Build() {
     remember_label("use_metal_hud", metal_hud_label);
     add_form_row(grid, metal_hud_label, metal_hud);
 
-    auto* rosetta = add_check(box, "use_rosetta");
-    auto* rosetta_label = add_label(box, _("Open using Rosetta"));
-    remember_label("use_rosetta", rosetta_label);
-    add_form_row(grid, rosetta_label, rosetta);
+    if (ExecutableHasX86_64Slice()) {
+      auto* rosetta = add_check(box, "use_rosetta");
+      auto* rosetta_label = add_label(box, _("Open using Rosetta"));
+      remember_label("use_rosetta", rosetta_label);
+      add_form_row(grid, rosetta_label, rosetta);
+    }
 
     box_sizer->Add(grid, 1, wxEXPAND | wxALL, 6);
     main_sizer->Add(box_sizer, 0, wxEXPAND | wxALL, 6);
