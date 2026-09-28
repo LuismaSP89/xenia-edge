@@ -282,7 +282,9 @@ dword_result_t NtReadFileScatter_entry(
       if (status_block) {
         WriteIoStatus(status_block, status, bytes_read);
       }
-      if (QueuesApc(apc_routine, apc_context_address)) {
+      // An async handle is always told PENDING, and then always gets its APC.
+      if (QueuesApc(apc_routine, apc_context_address) &&
+          (!file->is_synchronous() || status == X_STATUS_SUCCESS)) {
         thread->EnqueueApc(apc_routine & ~1u, apc_context_address,
                            status_block_address, 0);
       }
