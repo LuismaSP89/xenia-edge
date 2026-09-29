@@ -106,11 +106,17 @@ DEFINE_bool(
     "GPU");
 
 DEFINE_bool(
-    memexport_await_fences, true,
-    "Wait for the GPU to finish outstanding memory export before signalling a "
-    "fence the guest reads, so exported data is in guest RAM by the time the "
-    "guest looks at it. Disabling it avoids the stall but games reading "
-    "exported data on the CPU may see stale contents. Needs memexport_enable.",
+    memexport_await_pixel_exports, true,
+    "Wait for memory export from pixel shaders to reach guest RAM before a "
+    "fence or coherency request the guest observes. Games read this output on "
+    "the CPU and see stale data without the wait. Needs memexport_enable.",
+    "GPU");
+
+DEFINE_bool(
+    memexport_await_vertex_exports, false,
+    "Same as memexport_await_pixel_exports, for vertex shaders. Their output "
+    "usually only feeds later draws, and waiting after each export can stall "
+    "heavily. Needs memexport_enable.",
     "GPU");
 
 DEFINE_bool(
@@ -138,8 +144,11 @@ void SaveGPUSetting(GPUSetting setting, uint64_t value) {
     case GPUSetting::MemexportEnable:
       OVERRIDE_bool(memexport_enable, static_cast<bool>(value));
       break;
-    case GPUSetting::MemexportAwaitFences:
-      OVERRIDE_bool(memexport_await_fences, static_cast<bool>(value));
+    case GPUSetting::MemexportAwaitPixelExports:
+      OVERRIDE_bool(memexport_await_pixel_exports, static_cast<bool>(value));
+      break;
+    case GPUSetting::MemexportAwaitVertexExports:
+      OVERRIDE_bool(memexport_await_vertex_exports, static_cast<bool>(value));
       break;
   }
 }
@@ -150,11 +159,18 @@ bool GetGPUSetting(GPUSetting setting) {
       return cvars::clear_memory_page_state;
     case GPUSetting::MemexportEnable:
       return cvars::memexport_enable;
-    case GPUSetting::MemexportAwaitFences:
-      return cvars::memexport_await_fences;
+    case GPUSetting::MemexportAwaitPixelExports:
+      return cvars::memexport_await_pixel_exports;
+    case GPUSetting::MemexportAwaitVertexExports:
+      return cvars::memexport_await_vertex_exports;
     default:
       return false;
   }
+}
+
+bool IsMemexportAwaited(bool used_vertex, bool used_pixel) {
+  return (used_pixel && cvars::memexport_await_pixel_exports) ||
+         (used_vertex && cvars::memexport_await_vertex_exports);
 }
 
 static ZPDMode ParseZPDMode() {

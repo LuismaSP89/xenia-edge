@@ -761,10 +761,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_INTERRUPT(
   }
 
   // The handler runs as if everything before this point in the command stream
-  // is done, so export output it may read has to be in guest RAM first.
-  if (cvars::memexport_await_fences) {
-    COMMAND_PROCESSOR::AwaitMemexportForFence();
-  }
+  // is done, so awaited export output it may read has to be in guest RAM first.
+  COMMAND_PROCESSOR::AwaitMemexportForFence();
   COMMAND_PROCESSOR::SubmitResolvesForGuestSync();
 
   for (int n = 0; n < 6; n++) {
@@ -883,10 +881,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
     } else {
       if (poll_reg_addr == XE_GPU_REG_COHER_STATUS_HOST) {
         // A pending request (non-zero status, cleared by MakeCoherent) is the
-        // guest asking for a range to be made visible to it, so any export
+        // guest asking for a range to be made visible to it, so awaited export
         // output landing there has to have reached guest RAM first.
-        if (cvars::memexport_await_fences &&
-            register_file_->values[XE_GPU_REG_COHER_STATUS_HOST]) {
+        if (register_file_->values[XE_GPU_REG_COHER_STATUS_HOST]) {
           COMMAND_PROCESSOR::AwaitMemexportForCoherency(
               register_file_->values[XE_GPU_REG_COHER_BASE_HOST],
               register_file_->values[XE_GPU_REG_COHER_SIZE_HOST]);
@@ -1106,11 +1103,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
   // Writeback initiator.
   COMMAND_PROCESSOR::WriteEventInitiator(event_type);
 
-  // The guest treats this fence as "the GPU is done", so any export output it
-  // is about to read has to be in guest RAM first.
-  if (cvars::memexport_await_fences) {
-    COMMAND_PROCESSOR::AwaitMemexportForFence();
-  }
+  // The guest treats this fence as "the GPU is done", so awaited export output
+  // it is about to read has to be in guest RAM first.
+  COMMAND_PROCESSOR::AwaitMemexportForFence();
   COMMAND_PROCESSOR::SubmitResolvesForGuestSync();
 
   uint32_t data_value;

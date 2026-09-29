@@ -1583,7 +1583,8 @@ void MetalCommandProcessor::NoteMemexportRangesWritten() {
   for (const draw_util::MemExportRange& memexport_range : memexport_ranges_) {
     uint32_t base_bytes = memexport_range.base_address_dwords << 2;
     shared_memory_->RangeWrittenByGpu(base_bytes, memexport_range.size_bytes);
-    MarkMemexportPagesWritten(base_bytes, memexport_range.size_bytes);
+    MarkMemexportPagesWritten(base_bytes, memexport_range.size_bytes,
+                              memexport_ranges_awaited_);
     // Written from the still-open command buffer, so a later draw sampling it
     // as a texture needs the same split a resolve gets.
     MarkResolvedMemory(base_bytes, memexport_range.size_bytes);
@@ -3011,6 +3012,8 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   if (memexport_used_pixel) {
     draw_util::AddMemExportRanges(regs, *pixel_shader, memexport_ranges_);
   }
+  memexport_ranges_awaited_ =
+      IsMemexportAwaited(memexport_used_vertex, memexport_used_pixel);
   // Primitive/index processing (like D3D12/Vulkan).
   PrimitiveProcessor::ProcessingResult primitive_processing_result;
   if (!primitive_processor_) {

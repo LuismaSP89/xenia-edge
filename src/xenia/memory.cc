@@ -2355,14 +2355,21 @@ XE_NOINLINE void PhysicalHeap::EnableAccessCallbacksInner(
   // in this loop, but very little spent actually calling Protect
   uint32_t i = system_page_first;
   for (; i <= system_page_last; ++i) {
-    if constexpr (!enable_invalidation_notifications && enable_data_providers) {
-      // Re-arming a read watch over pages it still covers, most of them for a
-      // resolve redone every frame, has nothing to do there, so skip the rest
-      // of a flags block armed throughout.
+    {
+      // Pages still armed, as most are when a resolve or memexport range is
+      // re-armed every frame, need nothing, so skip a fully armed block.
       uint32_t block_last = std::min(i | 63, system_page_last);
       uint64_t block_mask = (~uint64_t(0) >> (63 - (block_last & 63))) &
                             (~uint64_t(0) << (i & 63));
-      if ((sys_page_flags[i >> 6].notify_on_read & block_mask) == block_mask) {
+      const SystemPageFlagsBlock& block = sys_page_flags[i >> 6];
+      uint64_t armed = ~uint64_t(0);
+      if constexpr (enable_invalidation_notifications) {
+        armed &= block.notify_on_invalidation;
+      }
+      if constexpr (enable_data_providers) {
+        armed &= block.notify_on_read;
+      }
+      if ((armed & block_mask) == block_mask) {
         if (protect_system_page_first != UINT32_MAX) {
           xe::memory::Protect(
               protect_base + (protect_system_page_first << system_page_shift_),

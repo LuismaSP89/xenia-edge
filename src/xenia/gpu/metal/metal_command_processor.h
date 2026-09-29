@@ -932,6 +932,8 @@ class MetalCommandProcessor : public CommandProcessor {
 
   // Memexport tracking for shared memory invalidation.
   std::vector<draw_util::MemExportRange> memexport_ranges_;
+  // Whether fences and coherency requests await memexport_ranges_' output.
+  bool memexport_ranges_awaited_ = false;
   // Export output lands in guest RAM through the shared buffer, so nothing is
   // ever staged for readback.
   void FlushMemexportStagingReadback() {}

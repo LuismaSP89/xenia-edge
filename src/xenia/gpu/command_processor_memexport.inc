@@ -26,8 +26,10 @@
 //     still being recorded.
 
 // Records the guest pages any memexport draw wrote so geometry draws consuming
-// that output route to the host-imported buffer. Marking rounds outward.
-void MarkMemexportPagesWritten(uint32_t base_bytes, uint32_t size_bytes) {
+// that output route to the host-imported buffer. Marking rounds outward. Only
+// awaited output (IsMemexportAwaited) holds back fences and coherency requests.
+void MarkMemexportPagesWritten(uint32_t base_bytes, uint32_t size_bytes,
+                               bool awaited) {
   if (!size_bytes || base_bytes >= SharedMemory::kBufferSize) {
     return;
   }
@@ -38,8 +40,11 @@ void MarkMemexportPagesWritten(uint32_t base_bytes, uint32_t size_bytes) {
     memexport_written_pages_[page >> 6] |= uint64_t(1) << (page & 63);
   }
   any_memexport_pages_written_ = true;
-  memexport_await_pending_ = true;
   memexport_last_submission_ = GetCurrentSubmission();
+  if (awaited) {
+    memexport_await_pending_ = true;
+    memexport_awaited_submission_ = memexport_last_submission_;
+  }
   memexport_written_page_min_ =
       std::min(memexport_written_page_min_, first_page);
   memexport_written_page_max_ =
@@ -56,9 +61,9 @@ void AwaitMemexportForFence() {
     return;
   }
   memexport_await_pending_ = false;
-  // Only as far as the last export, which is submitted first if it is still
-  // only recorded.
-  AwaitMemexportSubmission(memexport_last_submission_);
+  // Only as far as the last awaited export, which is submitted first if it is
+  // still only recorded.
+  AwaitMemexportSubmission(memexport_awaited_submission_);
   FlushMemexportStagingReadback();
 }
 
@@ -70,7 +75,7 @@ void AwaitMemexportForCoherency(uint32_t base_bytes, uint32_t size_bytes) {
     return;
   }
   memexport_await_pending_ = false;
-  AwaitMemexportSubmission(memexport_last_submission_);
+  AwaitMemexportSubmission(memexport_awaited_submission_);
   FlushMemexportStagingReadback();
 }
 
@@ -175,6 +180,7 @@ void ResetMemexportPages() {
   any_memexport_pages_written_ = false;
   memexport_await_pending_ = false;
   memexport_last_submission_ = 0;
+  memexport_awaited_submission_ = 0;
   memexport_written_page_min_ = kMemexportPageCount;
   memexport_written_page_max_ = 0;
 }
@@ -189,6 +195,8 @@ bool any_memexport_pages_written_ = false;
 bool memexport_await_pending_ = false;
 // Submission the last export draw was recorded in.
 uint64_t memexport_last_submission_ = 0;
+// Same, of the last export draw that is awaited.
+uint64_t memexport_awaited_submission_ = 0;
 // Inclusive min/max written page, so IsMemexportRange rejects a range outside
 // the memexport region in O(1). Empty (min > max) until the first memexport.
 uint32_t memexport_written_page_min_ = kMemexportPageCount;
