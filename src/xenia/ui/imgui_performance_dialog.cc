@@ -60,7 +60,8 @@ void ImGuiPerformanceDialog::LoadCurrentSettings() {
 
   // Load Memory Export settings
   memexport_enable_ = cvars::memexport_enable;
-  memexport_await_fences_ = cvars::memexport_await_fences;
+  memexport_await_pixel_exports_ = cvars::memexport_await_pixel_exports;
+  memexport_await_vertex_exports_ = cvars::memexport_await_vertex_exports;
 
   // Load Frame Rate Limit (FPS, 0 = unlimited)
   framerate_limit_ = static_cast<int>(cvars::framerate_limit);
@@ -79,11 +80,21 @@ void ImGuiPerformanceDialog::OnMemexportEnableChanged(bool enabled) {
   ShowNotification("Memory Export", enabled ? "Enabled" : "Disabled");
 }
 
-void ImGuiPerformanceDialog::OnMemexportAwaitFencesChanged(bool enabled) {
-  gpu::SaveGPUSetting(gpu::GPUSetting::MemexportAwaitFences, enabled);
+void ImGuiPerformanceDialog::OnMemexportAwaitPixelExportsChanged(bool enabled) {
+  gpu::SaveGPUSetting(gpu::GPUSetting::MemexportAwaitPixelExports, enabled);
   config::SaveGameConfigSetting(emulator_window_->emulator(), "GPU",
-                                "memexport_await_fences", enabled);
-  ShowNotification("Memexport Fence Wait", enabled ? "Enabled" : "Disabled");
+                                "memexport_await_pixel_exports", enabled);
+  ShowNotification("Memexport Pixel Export Wait",
+                   enabled ? "Enabled" : "Disabled");
+}
+
+void ImGuiPerformanceDialog::OnMemexportAwaitVertexExportsChanged(
+    bool enabled) {
+  gpu::SaveGPUSetting(gpu::GPUSetting::MemexportAwaitVertexExports, enabled);
+  config::SaveGameConfigSetting(emulator_window_->emulator(), "GPU",
+                                "memexport_await_vertex_exports", enabled);
+  ShowNotification("Memexport Vertex Export Wait",
+                   enabled ? "Enabled" : "Disabled");
 }
 
 void ImGuiPerformanceDialog::OnEmulatedDisplayUncappedChanged(bool uncapped) {
@@ -192,9 +203,13 @@ void ImGuiPerformanceDialog::OnDraw(ImGuiIO& io) {
     // Nothing reaches guest RAM to be awaited when export output stays
     // device-local.
     ImGui::BeginDisabled(!memexport_enable_);
-    if (ImGui::Checkbox("Wait for exports before fences (stall GPU)",
-                        &memexport_await_fences_)) {
-      OnMemexportAwaitFencesChanged(memexport_await_fences_);
+    if (ImGui::Checkbox("Wait for pixel shader exports (stall GPU)",
+                        &memexport_await_pixel_exports_)) {
+      OnMemexportAwaitPixelExportsChanged(memexport_await_pixel_exports_);
+    }
+    if (ImGui::Checkbox("Wait for vertex shader exports (slower)",
+                        &memexport_await_vertex_exports_)) {
+      OnMemexportAwaitVertexExportsChanged(memexport_await_vertex_exports_);
     }
     ImGui::EndDisabled();
     ImGui::PopID();

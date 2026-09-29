@@ -30,7 +30,8 @@ DECLARE_bool(shared_memory_zero_copy);
 DECLARE_bool(enable_host_buffer);
 
 DECLARE_bool(memexport_enable);
-DECLARE_bool(memexport_await_fences);
+DECLARE_bool(memexport_await_pixel_exports);
+DECLARE_bool(memexport_await_vertex_exports);
 
 DECLARE_bool(non_seamless_cube_map);
 

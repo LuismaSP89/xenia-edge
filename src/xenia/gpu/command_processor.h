@@ -41,7 +41,8 @@ namespace gpu {
 enum class GPUSetting {
   ClearMemoryPageState,
   MemexportEnable,
-  MemexportAwaitFences,
+  MemexportAwaitPixelExports,
+  MemexportAwaitVertexExports,
 };
 
 // Occlusion queries - ZPD report mode.
@@ -54,6 +55,10 @@ enum class ZPDMode {
 
 void SaveGPUSetting(GPUSetting setting, uint64_t value);
 bool GetGPUSetting(GPUSetting setting);
+
+// Whether fences and coherency requests wait for memory export from these
+// shader stages.
+bool IsMemexportAwaited(bool used_vertex, bool used_pixel);
 
 // Shared pool capacity for D3D12 and Vulkan.
 constexpr uint32_t kZPDQueryPoolCapacity = 8192;

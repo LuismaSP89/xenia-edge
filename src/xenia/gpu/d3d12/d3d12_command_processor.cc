@@ -3257,8 +3257,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       // host buffer and texture loads copy their range into the device buffer.
       for (const draw_util::MemExportRange& memexport_range :
            memexport_ranges_) {
-        MarkMemexportPagesWritten(memexport_range.base_address_dwords << 2,
-                                  memexport_range.size_bytes);
+        MarkMemexportPagesWritten(
+            memexport_range.base_address_dwords << 2,
+            memexport_range.size_bytes,
+            IsMemexportAwaited(memexport_used_vertex, memexport_used_pixel));
       }
     } else if (cvars::memexport_enable && !shared_memory_->is_zero_copy()) {
       // No host buffer to route to, and buffer_ is device-local, so the CPU
@@ -3309,8 +3311,10 @@ void D3D12CommandProcessor::StageMemexportReadback() {
       return staged.key == key;
     });
     memexport_staged_.push_back({key, base_bytes, size_bytes, 0});
-    // The fence and coherency waits are driven by the page marks.
-    MarkMemexportPagesWritten(base_bytes, size_bytes);
+    // The fence and coherency waits are driven by the page marks. Staged output
+    // is awaited from either stage, as only a wait copies it before frame end.
+    MarkMemexportPagesWritten(base_bytes, size_bytes,
+                              IsMemexportAwaited(true, true));
   }
 }
 
