@@ -1662,3 +1662,11 @@ msgstr "A Xenia a %s alatt kerül terjesztésre"
 #: src/xenia/ui/game_info_panel_wx.cc:212
 msgid "Content"
 msgstr "Tartalom"
+
+#: src/xenia/app/emulator_window.cc:405
+msgid "Alternate Guitar"
+msgstr "Alternatív gitár"
+
+#: src/xenia/app/emulator_window.cc:407
+msgid "Bass Guitar"
+msgstr "Basszusgitár"

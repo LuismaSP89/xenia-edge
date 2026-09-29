@@ -7,6 +7,8 @@
  ******************************************************************************
  */
 
+#include <atomic>
+
 #include "xenia/base/logging.h"
 #include "xenia/kernel/info/file.h"
 #include "xenia/kernel/kernel_state.h"
@@ -25,9 +27,31 @@ namespace xe {
 namespace kernel {
 namespace xboxkrnl {
 
-// File-pointer reads (offset -1) and reads at or past EOF complete inline.
-static bool CompletesAsync(XFile* file, uint64_t byte_offset) {
-  return !file->is_synchronous() && byte_offset < file->entry()->size();
+// Low bit probably means do not queue to IO ports.
+static bool QueuesApc(uint32_t apc_routine, uint32_t apc_context) {
+  return (apc_routine & ~1u) && apc_context;
+}
+
+// Status last, so a caller polling it for completion reads a valid count.
+static void WriteIoStatus(X_IO_STATUS_BLOCK* status_block, X_STATUS status,
+                          uint32_t information) {
+  status_block->information = information;
+  std::atomic_thread_fence(std::memory_order_release);
+  status_block->status = status;
+}
+
+// File-pointer reads (offset -1), reads at or past EOF and reads issued with an
+// APC from a user APC routine complete inline.
+static bool CompletesAsync(XFile* file, uint64_t byte_offset, XThread* thread,
+                           bool queues_apc) {
+  if (file->is_synchronous() || byte_offset >= file->entry()->size()) {
+    return false;
+  }
+  // TODO(has207): Likely not hardware accurate. Cars chains ReadFileEx from its
+  // completion routine, then only sleeps non-alertably. Completing inline
+  // queues the APC while the current delivery loop still drains the list. How
+  // the console delivers it is unknown.
+  return !(queues_apc && thread->in_user_apc());
 }
 
 struct CreateOptions {
@@ -165,7 +189,7 @@ dword_result_t NtReadFile_entry(dword_t file_handle, dword_t event_handle,
     auto thread = retain_object(XThread::GetCurrentThread());
     auto complete = [file, ev, thread, buffer_address, length, byte_offset,
                      apc_routine, apc_context_address, status_block,
-                     status_block_address]() {
+                     status_block_address](bool posted) {
       uint32_t bytes_read = 0;
       X_STATUS status = file->Read(buffer_address, length, byte_offset,
                                    &bytes_read, apc_context_address, false);
@@ -177,12 +201,13 @@ dword_result_t NtReadFile_entry(dword_t file_handle, dword_t event_handle,
         }
       }
       if (status_block) {
-        status_block->status = status;
-        status_block->information = bytes_read;
+        WriteIoStatus(status_block, status, bytes_read);
       }
-      // Low bit probably means do not queue to IO ports.
-      if ((apc_routine & ~1u) && apc_context_address &&
-          status == X_STATUS_SUCCESS) {
+      // A caller told PENDING always gets its APC, as on NT.
+      bool pending =
+          posted || (!file->is_synchronous() && status != X_STATUS_END_OF_FILE);
+      if (QueuesApc(apc_routine, apc_context_address) &&
+          (pending || status == X_STATUS_SUCCESS)) {
         thread->EnqueueApc(apc_routine & ~1u, apc_context_address,
                            status_block_address, 0);
       }
@@ -193,7 +218,8 @@ dword_result_t NtReadFile_entry(dword_t file_handle, dword_t event_handle,
       return status;
     };
 
-    if (CompletesAsync(file.get(), byte_offset)) {
+    if (CompletesAsync(file.get(), byte_offset, thread.get(),
+                       QueuesApc(apc_routine, apc_context_address))) {
       if (ev) {
         ev->Reset();
       }
@@ -201,10 +227,10 @@ dword_result_t NtReadFile_entry(dword_t file_handle, dword_t event_handle,
         status_block->status = X_STATUS_PENDING;
         status_block->information = 0;
       }
-      file->PostIo(std::move(complete));
+      file->PostIo([complete = std::move(complete)]() { complete(true); });
       result = X_STATUS_PENDING;
     } else {
-      result = complete();
+      result = complete(false);
       if (!file->is_synchronous() && result != X_STATUS_END_OF_FILE) {
         result = X_STATUS_PENDING;
       }
@@ -254,11 +280,11 @@ dword_result_t NtReadFileScatter_entry(
           file->ReadScatter(segments_address, read_length, byte_offset,
                             &bytes_read, apc_context_address, false);
       if (status_block) {
-        status_block->status = status;
-        status_block->information = bytes_read;
+        WriteIoStatus(status_block, status, bytes_read);
       }
-      // Low bit probably means do not queue to IO ports.
-      if ((apc_routine & ~1u) && apc_context_address) {
+      // An async handle is always told PENDING, and then always gets its APC.
+      if (QueuesApc(apc_routine, apc_context_address) &&
+          (!file->is_synchronous() || status == X_STATUS_SUCCESS)) {
         thread->EnqueueApc(apc_routine & ~1u, apc_context_address,
                            status_block_address, 0);
       }
@@ -269,7 +295,8 @@ dword_result_t NtReadFileScatter_entry(
       return status;
     };
 
-    if (CompletesAsync(file.get(), byte_offset)) {
+    if (CompletesAsync(file.get(), byte_offset, thread.get(),
+                       QueuesApc(apc_routine, apc_context_address))) {
       if (ev) {
         ev->Reset();
       }

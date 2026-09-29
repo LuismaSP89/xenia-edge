@@ -1665,3 +1665,11 @@ msgstr "Xenia est distribué sous %s"
 #: src/xenia/ui/game_info_panel_wx.cc:212
 msgid "Content"
 msgstr "Contenu"
+
+#: src/xenia/app/emulator_window.cc:405
+msgid "Alternate Guitar"
+msgstr "Guitare Alternative"
+
+#: src/xenia/app/emulator_window.cc:407
+msgid "Bass Guitar"
+msgstr "Guitare Basse"

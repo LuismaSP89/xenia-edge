@@ -935,6 +935,9 @@ class MetalCommandProcessor : public CommandProcessor {
   // Export output lands in guest RAM through the shared buffer, so nothing is
   // ever staged for readback.
   void FlushMemexportStagingReadback() {}
+  void AwaitMemexportSubmission(uint64_t submission) {
+    AwaitAllQueueOperationsCompletion();
+  }
   // Page tracking so a fence the guest reads can await export output. The
   // fragment's host/device routing half is unused - Metal has one buffer.
 #include "../command_processor_memexport.inc"

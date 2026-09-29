@@ -2354,13 +2354,9 @@ Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type,
 }
 
 bool D3D12CommandProcessor::EnsureMemexportRangeInDeviceBuffer(
-    uint32_t base_bytes, uint32_t size_bytes) {
+    uint32_t base_bytes, uint32_t size_bytes, bool whole_range) {
   if (!cvars::memexport_enable || shared_memory_->GetHostBuffer() == nullptr ||
-      !size_bytes || base_bytes >= SharedMemory::kBufferSize) {
-    return false;
-  }
-  size_bytes = std::min(size_bytes, SharedMemory::kBufferSize - base_bytes);
-  if (!IsMemexportRange(base_bytes, size_bytes)) {
+      !GatherMemexportCopyRuns(base_bytes, size_bytes, whole_range)) {
     return false;
   }
   // Transition the host buffer to a copy source (ordering the memexport writes,
@@ -2371,9 +2367,11 @@ bool D3D12CommandProcessor::EnsureMemexportRangeInDeviceBuffer(
   shared_memory_->UseHostAsCopySource();
   shared_memory_->UseAsCopyDestination();
   SubmitBarriers();
-  deferred_command_list_.D3DCopyBufferRegion(
-      shared_memory_->GetBuffer(), base_bytes, shared_memory_->GetHostBuffer(),
-      base_bytes, size_bytes);
+  for (const auto& run : memexport_copy_runs_) {
+    deferred_command_list_.D3DCopyBufferRegion(
+        shared_memory_->GetBuffer(), run.first, shared_memory_->GetHostBuffer(),
+        run.first, run.second);
+  }
   return true;
 }
 
@@ -2617,6 +2615,21 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   const bool memexport_used_pixel =
       pixel_shader && (pixel_shader->memexport_eM_written() != 0);
   const bool memexport_used = memexport_used_vertex || memexport_used_pixel;
+
+  memexport_ranges_.clear();
+  if (memexport_used_vertex) {
+    draw_util::AddMemExportRanges(regs, *vertex_shader, memexport_ranges_);
+  }
+  if (memexport_used_pixel) {
+    draw_util::AddMemExportRanges(regs, *pixel_shader, memexport_ranges_);
+  }
+  // Exports land in guest RAM through the host buffer.
+  if (cvars::memexport_enable && shared_memory_->GetHostBuffer() != nullptr) {
+    for (const draw_util::MemExportRange& memexport_range : memexport_ranges_) {
+      ProvideResolveOutputForGpuWrite(memexport_range.base_address_dwords << 2,
+                                      memexport_range.size_bytes);
+    }
+  }
 
   if (!BeginSubmission(true)) {
     return false;
@@ -3045,19 +3058,12 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       }
     }
   }
-  // Gather memexport ranges and ensure the heaps for them are resident, and
-  // also load the data surrounding the export and to fill the regions that
-  // won't be modified by the shaders.
-  memexport_ranges_.clear();
-  if (memexport_used_vertex) {
-    draw_util::AddMemExportRanges(regs, *vertex_shader, memexport_ranges_);
-  }
-  if (memexport_used_pixel) {
-    draw_util::AddMemExportRanges(regs, *pixel_shader, memexport_ranges_);
-  }
-  // Host-routed producers write output to host_buffer_ (guest RAM), not the
-  // device buffer, so this upload is redundant. It also drops the draw when the
-  // guest committed only part of the declared capacity, so skip it.
+  // Ensure the heaps for the memexport ranges are resident, and also load the
+  // data surrounding the export and to fill the regions that won't be modified
+  // by the shaders. Host-routed producers write output to host_buffer_ (guest
+  // RAM), not the device buffer, so this upload is redundant. It also drops the
+  // draw when the guest committed only part of the declared capacity, so skip
+  // it.
   if (!route_to_host) {
     for (const draw_util::MemExportRange& memexport_range : memexport_ranges_) {
       if (!shared_memory_->RequestRange(
@@ -3302,7 +3308,7 @@ void D3D12CommandProcessor::StageMemexportReadback() {
     std::erase_if(memexport_staged_, [key](const MemexportStagedRange& staged) {
       return staged.key == key;
     });
-    memexport_staged_.push_back({key, base_bytes, size_bytes});
+    memexport_staged_.push_back({key, base_bytes, size_bytes, 0});
     // The fence and coherency waits are driven by the page marks.
     MarkMemexportPagesWritten(base_bytes, size_bytes);
   }
@@ -3314,9 +3320,11 @@ void D3D12CommandProcessor::FlushMemexportStagingReadback() {
   }
   // Staged output is about to reach guest RAM, so no fence need await it.
   memexport_await_pending_ = false;
-  if (!AwaitAllQueueOperationsCompletion()) {
+  // Staging copies are recorded in the submission of the export they copy.
+  AwaitMemexportSubmission(memexport_last_submission_);
+  if (GetCompletedSubmission() < memexport_last_submission_) {
     XELOGE(
-        "D3D12CommandProcessor: Failed to complete queue operations for "
+        "D3D12CommandProcessor: Failed to complete the submission for "
         "memexport staging readback");
     memexport_staged_.clear();
     return;
@@ -3331,7 +3339,8 @@ void D3D12CommandProcessor::FlushMemexportStagingReadback() {
     if (!length) {
       continue;
     }
-    ReadbackStagingToGuestRam(slot->buffer, staged.address, length);
+    ReadbackStagingToGuestRam(slot->buffer, staged.offset, staged.address,
+                              length);
   }
   memexport_staged_.clear();
 }

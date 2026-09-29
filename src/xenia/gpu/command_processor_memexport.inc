@@ -11,7 +11,8 @@
 // processors. This is #included into each backend's class body (like the pm4
 // command processor sections) so each backend gets its own inlinable copy with
 // no inheritance or virtual dispatch. The include site must already provide
-// SharedMemory, Shader, RegisterFile, xenos, xe::bit_scan_forward and <array>.
+// SharedMemory, Shader, RegisterFile, xenos, xe::bit_scan_forward, <array> and
+// <vector>.
 // No include guard: this is injected into a class body, not a standalone
 // header.
 //
@@ -20,6 +21,9 @@
 //     Copies export output the backend staged for readback into guest RAM, now
 //     that the wait has made it available. Empty where output already lands
 //     there, which is zero-copy and the host buffer.
+//   void AwaitMemexportSubmission(uint64_t submission)
+//     Waits for a submission to complete, ending it first if it is the one
+//     still being recorded.
 
 // Records the guest pages any memexport draw wrote so geometry draws consuming
 // that output route to the host-imported buffer. Marking rounds outward.
@@ -35,6 +39,7 @@ void MarkMemexportPagesWritten(uint32_t base_bytes, uint32_t size_bytes) {
   }
   any_memexport_pages_written_ = true;
   memexport_await_pending_ = true;
+  memexport_last_submission_ = GetCurrentSubmission();
   memexport_written_page_min_ =
       std::min(memexport_written_page_min_, first_page);
   memexport_written_page_max_ =
@@ -51,9 +56,9 @@ void AwaitMemexportForFence() {
     return;
   }
   memexport_await_pending_ = false;
-  // Flushes the open submission before waiting, so a draw that is still only
-  // recorded gets submitted rather than skipped.
-  AwaitAllQueueOperationsCompletion();
+  // Only as far as the last export, which is submitted first if it is still
+  // only recorded.
+  AwaitMemexportSubmission(memexport_last_submission_);
   FlushMemexportStagingReadback();
 }
 
@@ -65,7 +70,7 @@ void AwaitMemexportForCoherency(uint32_t base_bytes, uint32_t size_bytes) {
     return;
   }
   memexport_await_pending_ = false;
-  AwaitAllQueueOperationsCompletion();
+  AwaitMemexportSubmission(memexport_last_submission_);
   FlushMemexportStagingReadback();
 }
 
@@ -129,11 +134,47 @@ bool VertexFetchInMemexportRange(const RegisterFile& regs,
   return false;
 }
 
+// Fills memexport_copy_runs_ with the parts of a range on pages memexport
+// wrote, or all of it with whole_range, as other pages may hold GPU output only
+// the device buffer has. False if memexport wrote none of it.
+bool GatherMemexportCopyRuns(uint32_t base_bytes, uint32_t size_bytes,
+                             bool whole_range) {
+  memexport_copy_runs_.clear();
+  if (!IsMemexportRange(base_bytes, size_bytes)) {
+    return false;
+  }
+  size_bytes = std::min(size_bytes, SharedMemory::kBufferSize - base_bytes);
+  uint32_t end = base_bytes + size_bytes;
+  if (whole_range) {
+    memexport_copy_runs_.emplace_back(base_bytes, size_bytes);
+    return true;
+  }
+  uint32_t first_page = std::max(base_bytes >> 12, memexport_written_page_min_);
+  uint32_t last_page = std::min((end - 1) >> 12, memexport_written_page_max_);
+  for (uint32_t page = first_page; page <= last_page; ++page) {
+    if (!(memexport_written_pages_[page >> 6] & (uint64_t(1) << (page & 63)))) {
+      continue;
+    }
+    uint32_t run_start = std::max(base_bytes, page << 12);
+    uint32_t run_end = std::min(end, (page + 1) << 12);
+    if (!memexport_copy_runs_.empty()) {
+      std::pair<uint32_t, uint32_t>& last_run = memexport_copy_runs_.back();
+      if (last_run.first + last_run.second == run_start) {
+        last_run.second += run_end - run_start;
+        continue;
+      }
+    }
+    memexport_copy_runs_.emplace_back(run_start, run_end - run_start);
+  }
+  return true;
+}
+
 // Resets all tracking, called from each backend's ShutdownContext.
 void ResetMemexportPages() {
   memexport_written_pages_.fill(0);
   any_memexport_pages_written_ = false;
   memexport_await_pending_ = false;
+  memexport_last_submission_ = 0;
   memexport_written_page_min_ = kMemexportPageCount;
   memexport_written_page_max_ = 0;
 }
@@ -146,7 +187,11 @@ std::array<uint64_t, kMemexportPageCount / 64> memexport_written_pages_{};
 bool any_memexport_pages_written_ = false;
 // Export output has been recorded but not yet awaited for the guest to read.
 bool memexport_await_pending_ = false;
+// Submission the last export draw was recorded in.
+uint64_t memexport_last_submission_ = 0;
 // Inclusive min/max written page, so IsMemexportRange rejects a range outside
 // the memexport region in O(1). Empty (min > max) until the first memexport.
 uint32_t memexport_written_page_min_ = kMemexportPageCount;
 uint32_t memexport_written_page_max_ = 0;
+// GatherMemexportCopyRuns output, as (base, size).
+std::vector<std::pair<uint32_t, uint32_t>> memexport_copy_runs_;

@@ -1659,3 +1659,11 @@ msgstr "Xenia се дистрибуира под %s"
 #: src/xenia/ui/game_info_panel_wx.cc:212
 msgid "Content"
 msgstr "Садржај"
+
+#: src/xenia/app/emulator_window.cc:405
+msgid "Alternate Guitar"
+msgstr "Алтернативна гитара"
+
+#: src/xenia/app/emulator_window.cc:407
+msgid "Bass Guitar"
+msgstr "Бас-гитара"

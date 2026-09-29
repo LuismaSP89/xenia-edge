@@ -3450,6 +3450,14 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   if (memexport_used_pixel) {
     draw_util::AddMemExportRanges(regs, *pixel_shader, memexport_ranges_);
   }
+  // Exports land in guest RAM through the host buffer.
+  if (cvars::memexport_enable &&
+      shared_memory_host_and_edram_descriptor_set_ != VK_NULL_HANDLE) {
+    for (const draw_util::MemExportRange& memexport_range : memexport_ranges_) {
+      ProvideResolveOutputForGpuWrite(memexport_range.base_address_dwords << 2,
+                                      memexport_range.size_bytes);
+    }
+  }
 
   uint32_t ps_param_gen_pos = UINT32_MAX;
   uint32_t interpolator_mask =
@@ -4275,7 +4283,7 @@ void VulkanCommandProcessor::StageMemexportReadback() {
     std::erase_if(memexport_staged_, [key](const MemexportStagedRange& staged) {
       return staged.key == key;
     });
-    memexport_staged_.push_back({key, base_bytes, size_bytes});
+    memexport_staged_.push_back({key, base_bytes, size_bytes, 0});
     // The fence and coherency waits are driven by the page marks.
     MarkMemexportPagesWritten(base_bytes, size_bytes);
   }
@@ -4287,9 +4295,11 @@ void VulkanCommandProcessor::FlushMemexportStagingReadback() {
   }
   // Staged output is about to reach guest RAM, so no fence need await it.
   memexport_await_pending_ = false;
-  if (!AwaitAllQueueOperationsCompletion()) {
+  // Staging copies are recorded in the submission of the export they copy.
+  AwaitMemexportSubmission(memexport_last_submission_);
+  if (GetCompletedSubmission() < memexport_last_submission_) {
     XELOGE(
-        "VulkanCommandProcessor: Failed to complete queue operations for "
+        "VulkanCommandProcessor: Failed to complete the submission for "
         "memexport staging readback");
     memexport_staged_.clear();
     return;
@@ -4306,26 +4316,26 @@ void VulkanCommandProcessor::FlushMemexportStagingReadback() {
     }
     const ReadbackStagingBuffer& staging = slot->buffer;
     InvalidateReadbackStaging(staging);
-    ReadbackStagingToGuestRam(staging, staged.address, length);
+    ReadbackStagingToGuestRam(staging, staged.offset, staged.address, length);
   }
   memexport_staged_.clear();
 }
 
 bool VulkanCommandProcessor::EnsureMemexportRangeInDeviceBuffer(
-    uint32_t base_bytes, uint32_t size_bytes) {
+    uint32_t base_bytes, uint32_t size_bytes, bool whole_range) {
   // Readers of the device buffer need memexport output copied across from
   // host_buffer_ (guest RAM), where it actually lives. Doing it on the GPU
   // keeps it ordered against the writes that produced it, which a CPU read
   // cannot be.
   if (!cvars::memexport_enable ||
       shared_memory_host_and_edram_descriptor_set_ == VK_NULL_HANDLE ||
-      !size_bytes || base_bytes >= SharedMemory::kBufferSize) {
+      !GatherMemexportCopyRuns(base_bytes, size_bytes, whole_range)) {
     return false;
   }
-  size_bytes = std::min(size_bytes, SharedMemory::kBufferSize - base_bytes);
-  if (!IsMemexportRange(base_bytes, size_bytes)) {
-    return false;
-  }
+  // The barriers span the runs.
+  base_bytes = memexport_copy_runs_.front().first;
+  size_bytes = memexport_copy_runs_.back().first +
+               memexport_copy_runs_.back().second - base_bytes;
   VkBuffer host_buffer = shared_memory_->host_buffer();
   VkBuffer device_buffer = shared_memory_->buffer();
   if (host_buffer == VK_NULL_HANDLE) {
@@ -4357,12 +4367,16 @@ bool VulkanCommandProcessor::EnsureMemexportRangeInDeviceBuffer(
                           VK_ACCESS_TRANSFER_WRITE_BIT);
   SubmitBarriers(true);
 
-  VkBufferCopy copy_region;
-  copy_region.srcOffset = base_bytes;
-  copy_region.dstOffset = base_bytes;
-  copy_region.size = size_bytes;
-  deferred_command_buffer_.CmdVkCopyBuffer(host_buffer, device_buffer, 1,
-                                           &copy_region);
+  memexport_copy_regions_.clear();
+  for (const auto& run : memexport_copy_runs_) {
+    VkBufferCopy& copy_region = memexport_copy_regions_.emplace_back();
+    copy_region.srcOffset = run.first;
+    copy_region.dstOffset = run.first;
+    copy_region.size = run.second;
+  }
+  deferred_command_buffer_.CmdVkCopyBuffer(
+      host_buffer, device_buffer, uint32_t(memexport_copy_regions_.size()),
+      memexport_copy_regions_.data());
 
   // Make the copied data visible to the following read.
   PushBufferMemoryBarrier(device_buffer, VkDeviceSize(base_bytes),

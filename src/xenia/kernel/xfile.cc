@@ -35,12 +35,12 @@ XFile::XFile(KernelState* kernel_state, vfs::File* file, bool synchronous,
       file_(file),
       is_synchronous_(synchronous),
       is_alertable_(alertable) {
-  async_event_ = threading::Event::CreateAutoResetEvent(false);
+  async_event_ = threading::Event::CreateManualResetEvent(false);
   assert_not_null(async_event_);
 }
 
 XFile::XFile() : XObject(kObjectType), completion_port_lock_() {
-  async_event_ = threading::Event::CreateAutoResetEvent(false);
+  async_event_ = threading::Event::CreateManualResetEvent(false);
   assert_not_null(async_event_);
 }
 
@@ -257,6 +257,16 @@ X_STATUS XFile::ReadInternal(uint32_t buffer_guest_address,
                 memory::PageAccess::kReadWrite) {
           result = X_STATUS_ACCESS_VIOLATION;
         } else {
+          if (buffer_physical_heap) {
+            // Resolve output is copied in whole pages, so the pages this read
+            // only partly covers get it now, for the read to land over it.
+            uint64_t file_size = entry()->size();
+            buffer_physical_heap->ProvideReadWatchedEdgePages(
+                buffer_guest_address,
+                uint32_t(std::min<uint64_t>(
+                    buffer_length,
+                    byte_offset < file_size ? file_size - byte_offset : 0)));
+          }
           result = file_->ReadSync(
               std::span<uint8_t>(
                   buffer_physical_heap
@@ -308,6 +318,9 @@ X_STATUS XFile::ReadInternal(uint32_t buffer_guest_address,
 }
 
 void XFile::PostIo(std::function<void()> fn) {
+  // Cleared at issue, as NT clears the file object event, so a wait on the
+  // handle cannot return on an earlier request's completion.
+  async_event_->Reset();
   kernel_state()->guest_scheduler()->PostHostCall(std::move(fn),
                                                   io_call_class());
 }

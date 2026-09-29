@@ -1660,3 +1660,11 @@ msgstr "Xenia %s இன் கீழ் விநியோகிக்கப்�
 #: src/xenia/ui/game_info_panel_wx.cc:212
 msgid "Content"
 msgstr "உள்ளடக்கம்"
+
+#: src/xenia/app/emulator_window.cc:405
+msgid "Alternate Guitar"
+msgstr "மாற்று கிட்டார்"
+
+#: src/xenia/app/emulator_window.cc:407
+msgid "Bass Guitar"
+msgstr "பேஸ் கிட்டார்"

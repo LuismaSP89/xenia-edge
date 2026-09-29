@@ -464,6 +464,13 @@ void InputSystem::ReconcileBindings() {
       break;
     }
   }
+
+  // Pass 3: a device with a native mode uses it unless its type is overridden.
+  for (auto& b : slot_bindings_) {
+    if (b.driver) {
+      b.driver->SetNativeMode(b.driver_slot, !b.subtype_override);
+    }
+  }
 }
 
 std::vector<InputSystem::EnumeratedDevice> InputSystem::EnumerateDevices() {
@@ -525,6 +532,7 @@ void InputSystem::BindSlot(uint32_t guest_slot, InputDriver* driver,
   }
 
   driver->OnBoundToSlot(driver_slot, guest_slot);
+  driver->SetNativeMode(driver_slot, !target.subtype_override);
 
   if (kernel::kernel_state()) {
     kernel::kernel_state()->BroadcastNotification(
@@ -544,6 +552,9 @@ void InputSystem::SetSlotSubtypeOverride(uint32_t guest_slot, uint8_t subtype) {
     return;
   }
   binding.subtype_override = subtype;
+  if (binding.driver) {
+    binding.driver->SetNativeMode(binding.driver_slot, !subtype);
+  }
   if (kernel::kernel_state()) {
     kernel::kernel_state()->BroadcastNotification(
         kXNotificationSystemInputDevicesChanged, 0);
