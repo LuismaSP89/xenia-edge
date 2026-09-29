@@ -363,6 +363,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
   void OrderReadbackStagingWrite(VkBuffer staging_buffer);
   void StageMemexportReadback();
   void FlushMemexportStagingReadback();
+  void AwaitMemexportSubmission(uint64_t submission) {
+    CheckSubmissionCompletionAndDeviceLoss(submission);
+  }
   // Export ranges staged but not yet copied out, in record order - a later
   // copy of an overlapping range has to win.
   struct MemexportStagedRange {

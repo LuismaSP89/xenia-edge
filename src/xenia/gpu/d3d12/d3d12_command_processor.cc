@@ -3320,9 +3320,11 @@ void D3D12CommandProcessor::FlushMemexportStagingReadback() {
   }
   // Staged output is about to reach guest RAM, so no fence need await it.
   memexport_await_pending_ = false;
-  if (!AwaitAllQueueOperationsCompletion()) {
+  // Staging copies are recorded in the submission of the export they copy.
+  AwaitMemexportSubmission(memexport_last_submission_);
+  if (GetCompletedSubmission() < memexport_last_submission_) {
     XELOGE(
-        "D3D12CommandProcessor: Failed to complete queue operations for "
+        "D3D12CommandProcessor: Failed to complete the submission for "
         "memexport staging readback");
     memexport_staged_.clear();
     return;

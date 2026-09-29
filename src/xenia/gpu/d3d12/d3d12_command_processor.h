@@ -415,6 +415,9 @@ class D3D12CommandProcessor final : public CommandProcessor {
 #include "../command_processor_readback_staging.inc"
   void StageMemexportReadback();
   void FlushMemexportStagingReadback();
+  void AwaitMemexportSubmission(uint64_t submission) {
+    CheckSubmissionCompletion(submission);
+  }
   // Export ranges staged but not yet copied out, in record order - a later
   // copy of an overlapping range has to win.
   struct MemexportStagedRange {
