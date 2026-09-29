@@ -99,13 +99,13 @@ void MarkResolvePagesRead(uint32_t physical_address, uint32_t length) {
       last_owner = owner;
     }
   }
-  ProvideResolveOutput(physical_address, length);
+  ProvideResolveOutput(physical_address, length, false);
 }
 
 // Before a write drops the read watch: the write has to land over what the GPU
 // wrote there, not under it.
 void PrepareResolvePagesForWrite(uint32_t address, uint32_t length) {
-  ProvideResolveOutput(address, length);
+  ProvideResolveOutput(address, length, true);
 }
 
 // Before recording a draw that writes guest RAM directly, so a later fault copy
@@ -121,7 +121,7 @@ void ProvideResolveOutputForGpuWrite(uint32_t address, uint32_t length) {
       HasUnsubmittedResolveOutput(address, length)) {
     EndResolveSubmission();
   }
-  ProvideResolveOutput(address, length);
+  ProvideResolveOutput(address, length, false);
 }
 
 // Whether an unsubmitted resolve owns uncopied output in these pages.
@@ -166,8 +166,9 @@ void DiscardResolvePages(uint32_t address, uint32_t length) {
 // make the GPU thread submit without deadlocking, holding the global lock or
 // resolve_read_mutex_, so a read racing its submission gets the previous
 // contents, as it would on the console, and the watch this access used up is
-// armed again once it is.
-void ProvideResolveOutput(uint32_t address, uint32_t length) {
+// armed again once it is. A write the copy can't precede lands in guest RAM, so
+// the later copy of an edge page it hit takes only the resolve's own bytes.
+void ProvideResolveOutput(uint32_t address, uint32_t length, bool write) {
   if (!resolve_page_owners_ || !length) {
     return;
   }
@@ -195,14 +196,18 @@ void ProvideResolveOutput(uint32_t address, uint32_t length) {
     if (owner.in_guest_ram || !owner.copyable) {
       continue;
     }
+    uint32_t owner_end = owner.address + owner.length;
+    uint32_t owner_first_page = owner.address >> 12;
+    uint32_t owner_last_page = std::min((owner_end - 1) >> 12, page_count - 1);
     if (owner.submission > submitted) {
+      if (write) {
+        ClipResolveEdgePagesWritten(owner, owner_first_page, owner_last_page,
+                                    first_page, last_page);
+      }
       RearmResolveAfterSubmission(owner);
       continue;
     }
     resolve_fault_copy_ranges_.clear();
-    uint32_t owner_first_page = owner.address >> 12;
-    uint32_t owner_last_page =
-        std::min((owner.address + owner.length - 1) >> 12, page_count - 1);
     for (uint32_t owner_page = owner_first_page; owner_page <= owner_last_page;
          ++owner_page) {
       if (resolve_page_owners_[owner_page].load(std::memory_order_relaxed) !=
@@ -220,10 +225,29 @@ void ProvideResolveOutput(uint32_t address, uint32_t length) {
       }
     }
     // The first and last pages may be partly someone else's, but the shared
-    // memory buffer holds the latest GPU data for all of them.
+    // memory buffer holds the latest GPU data for all of them, unless the CPU
+    // wrote them before this could copy it.
+    if (!resolve_fault_copy_ranges_.empty()) {
+      uint32_t first_page_base = owner_first_page << 12;
+      uint32_t last_page_end = (owner_last_page + 1) << 12;
+      auto& first_range = resolve_fault_copy_ranges_.front();
+      if (owner.clip_first_page && first_range.first == first_page_base) {
+        first_range.second -= owner.address - first_page_base;
+        first_range.first = owner.address;
+      }
+      auto& last_range = resolve_fault_copy_ranges_.back();
+      if (owner.clip_last_page &&
+          last_range.first + last_range.second == last_page_end) {
+        last_range.second -= last_page_end - owner_end;
+      }
+    }
     if (FaultCopyResolveToGuestRam(resolve_fault_copy_ranges_)) {
       owner.in_guest_ram = true;
     } else {
+      if (write) {
+        ClipResolveEdgePagesWritten(owner, owner_first_page, owner_last_page,
+                                    first_page, last_page);
+      }
       RearmResolveAfterSubmission(owner);
     }
   }
@@ -279,6 +303,8 @@ void NoteResolveForReadback(uint32_t address, uint32_t length, bool is_scaled) {
     owner.copyable = !is_scaled;
     owner.in_guest_ram = false;
     owner.rearm_pending = false;
+    owner.clip_first_page = false;
+    owner.clip_last_page = false;
   }
   // The watch is one-shot, so it is re-armed on every resolve. Only once the
   // owner is published: a fault still on the previous arm would otherwise see
@@ -575,6 +601,10 @@ struct ResolveOwner {
   bool in_guest_ram = false;
   // In resolve_rearm_ranges_ already.
   bool rearm_pending = false;
+  // The CPU wrote this edge page before the output could be copied, so only
+  // the resolve's bytes in it are copied.
+  bool clip_first_page = false;
+  bool clip_last_page = false;
 };
 std::unordered_map<uint64_t, ResolveOwner> resolve_owners_;
 static constexpr size_t kMaxResolveOwners = 4096;
@@ -583,6 +613,21 @@ void RearmResolveAfterSubmission(ResolveOwner& owner) {
   if (!owner.rearm_pending) {
     owner.rearm_pending = true;
     resolve_rearm_ranges_.emplace_back(owner.address, owner.length);
+  }
+}
+// Under resolve_read_mutex_, when a write to pages [first_page, last_page] goes
+// ahead of the copy of this resolve's output: an edge page it hits partly holds
+// what the CPU writes there, not only what the GPU wrote.
+void ClipResolveEdgePagesWritten(ResolveOwner& owner, uint32_t owner_first_page,
+                                 uint32_t owner_last_page, uint32_t first_page,
+                                 uint32_t last_page) {
+  if ((owner.address & 4095) && first_page <= owner_first_page &&
+      last_page >= owner_first_page) {
+    owner.clip_first_page = true;
+  }
+  if (((owner.address + owner.length) & 4095) &&
+      first_page <= owner_last_page && last_page >= owner_last_page) {
+    owner.clip_last_page = true;
   }
 }
 std::vector<std::pair<uint32_t, uint32_t>> resolve_fault_copy_ranges_;
