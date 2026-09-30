@@ -428,13 +428,13 @@ class SpirvShaderTranslator : public ShaderTranslator {
     uint32_t interpreter_cf_instr_count;
     uint32_t texture_integer_scale_pad[2];
 
-    // Integer num_format on fixed textures. Each dword packs the scale needed
-    // to turn normalized host samples back into guest integer values.
-    // bits 0:3 = component_bits - 1
-    // bit 4 = signed
-    // bit 5 = unsigned-biased
-    // bit 24 = normalized
-    // Zero means no scale.
+    // Packed fixed texture conversion (see GetIntegerScaleBits).
+    // Every component occupies 6 bits in bits 0:23
+    //   bits 0:3 = component_bits - 1
+    //   bits 4:5 = xenos::TextureSign
+    // bit 24 = normalized num_format
+    // bit 26 = point sampled fetch constant
+    // Zero means no conversion.
     // Appended at the very tail (std140 uint4 [35]) so it disturbs neither the
     // xenos_draw.glsli tessellation offsets nor the interpreter [34] slot.
     uint32_t texture_integer_scale_bits[32];
