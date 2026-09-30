@@ -1069,6 +1069,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
   uint32_t GetCurrentDrawResolutionScaleY() const {
     return IsCurrentDrawScaleNative() ? 1 : draw_resolution_scale_y_;
   }
+  // Whether point sampled fetches at an interpolated coordinate pick the guest
+  // texel sampled at the guest pixel center, rather than at the host pixel.
+  bool IsGuestPixelCenterFetchNeeded() const;
 
   // For safety with different drivers (even though fragment shader interlock in
   // SPIR-V only has one control flow requirement - that both begin and end must
@@ -1344,6 +1347,13 @@ class SpirvShaderTranslator : public ShaderTranslator {
   spv::Id var_main_tfetch_gradients_v_;
   // float4[register_count()].
   spv::Id var_main_registers_;
+  // Components of registers 0-15, 4 bits per register, that still hold the
+  // interpolant they were initialized with.
+  uint64_t main_interpolators_unmodified_;
+  // float4 each, the interpolant at the guest pixel center minus at the host
+  // pixel, for IsGuestPixelCenterFetchNeeded.
+  std::array<spv::Id, xenos::kMaxInterpolators>
+      var_main_interpolator_guest_center_deltas_;
 
   // Guest instruction bisect, snapshotting a register to color 0.
   bool BisectTargetsCurrentShader() const;

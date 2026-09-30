@@ -343,6 +343,8 @@ void SpirvShaderTranslator::Reset() {
   bisect_snapshot_emitted_ = false;
   var_main_bisect_snapshot_ = spv::NoResult;
   var_main_registers_ = spv::NoResult;
+  main_interpolators_unmodified_ = 0;
+  var_main_interpolator_guest_center_deltas_.fill(spv::NoResult);
   var_main_memexport_address_ = spv::NoResult;
   for (size_t memexport_eM_index = 0;
        memexport_eM_index < xe::countof(var_main_memexport_data_);
@@ -1379,6 +1381,11 @@ void SpirvShaderTranslator::ProcessLabel(uint32_t cf_index) {
     // 0 already added in the beginning.
     return;
   }
+
+  // Writes after a label may reach it by jumping back. Writes skipped by
+  // jumping forward are already in main_interpolators_unmodified_.
+  main_interpolators_unmodified_ &=
+      ~current_shader().GetRegisterComponentsWrittenBeforeReentering(cf_index);
 
   assert_false(current_shader().label_addresses().empty());
 
@@ -3396,7 +3403,7 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
   // - and must do so per-sample for MSAA antialiasing of intersections.
   bool need_frag_coord =
       edram_fragment_shader_interlock_ || param_gen_needed || IsSampleRate() ||
-      DSV_IsApplyingPolygonOffset() ||
+      DSV_IsApplyingPolygonOffset() || IsGuestPixelCenterFetchNeeded() ||
       (!edram_fragment_shader_interlock_ && !is_depth_only_fragment_shader_ &&
        current_shader().writes_color_target(0) &&
        !IsExecutionModeEarlyFragmentTests());
@@ -3728,6 +3735,48 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
         builder_->createCompositeConstruct(type_float4_, id_vector_temp_util_);
   }
 
+  // The Xenos samples a pixel once, at its center. With resolution scaling, the
+  // host pixels are up to (scale - 1) / (2 * scale) guest pixels away from it,
+  // which with a coordinate bias the guest was fine with, such as the quarter
+  // texel in 43430814's GPU animation passes, makes point sampled fetches read
+  // the neighbor texel. Over at most (scale - 1) / 2 host pixels, interpolants
+  // are close enough to affine for the derivatives to give their value at the
+  // guest pixel center.
+  spv::Id guest_pixel_center_offsets[2] = {};
+  bool guest_pixel_center_fetch = IsGuestPixelCenterFetchNeeded();
+  if (guest_pixel_center_fetch) {
+    assert_true(input_fragment_coordinates_ != spv::NoResult);
+    uint32_t pixel_scales[] = {GetCurrentDrawResolutionScaleX(),
+                               GetCurrentDrawResolutionScaleY()};
+    for (uint32_t i = 0; i < 2; ++i) {
+      if (pixel_scales[i] <= 1) {
+        guest_pixel_center_offsets[i] = const_float_0_;
+        continue;
+      }
+      id_vector_temp_.clear();
+      id_vector_temp_.push_back(builder_->makeIntConstant(int(i)));
+      spv::Id host_position = builder_->createLoad(
+          builder_->createAccessChain(spv::StorageClassInput,
+                                      input_fragment_coordinates_,
+                                      id_vector_temp_),
+          spv::NoPrecision);
+      spv::Id pixel_scale = builder_->makeFloatConstant(float(pixel_scales[i]));
+      // (floor(position / scale) + 0.5) * scale - position.
+      spv::Id guest_center = builder_->createNoContractionBinOp(
+          spv::OpFMul, type_float_,
+          builder_->createNoContractionBinOp(
+              spv::OpFAdd, type_float_,
+              builder_->createUnaryBuiltinCall(
+                  type_float_, ext_inst_glsl_std_450_, GLSLstd450Floor,
+                  builder_->createNoContractionBinOp(
+                      spv::OpFDiv, type_float_, host_position, pixel_scale)),
+              builder_->makeFloatConstant(0.5f)),
+          pixel_scale);
+      guest_pixel_center_offsets[i] = builder_->createNoContractionBinOp(
+          spv::OpFSub, type_float_, guest_center, host_position);
+    }
+  }
+
   for (uint32_t i = 0; i < register_count(); ++i) {
     if (i == param_gen_interpolator) {
       continue;
@@ -3791,6 +3840,29 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
         interpolated_value = builder_->createLoad(
             input_output_interpolators_[i], spv::NoPrecision);
       }
+      if (guest_pixel_center_fetch &&
+          (current_shader().point_fetch_coordinate_registers() &
+           (UINT32_C(1) << i))) {
+        spv::Id guest_center_delta = builder_->createNoContractionBinOp(
+            spv::OpFAdd, type_float4_,
+            builder_->createNoContractionBinOp(
+                spv::OpVectorTimesScalar, type_float4_,
+                builder_->createUnaryOp(spv::OpDPdx, type_float4_,
+                                        interpolated_value),
+                guest_pixel_center_offsets[0]),
+            builder_->createNoContractionBinOp(
+                spv::OpVectorTimesScalar, type_float4_,
+                builder_->createUnaryOp(spv::OpDPdy, type_float4_,
+                                        interpolated_value),
+                guest_pixel_center_offsets[1]));
+        var_main_interpolator_guest_center_deltas_[i] =
+            builder_->createVariable(spv::NoPrecision,
+                                     spv::StorageClassFunction, type_float4_,
+                                     "xe_var_interpolator_guest_center_delta");
+        builder_->createStore(guest_center_delta,
+                              var_main_interpolator_guest_center_deltas_[i]);
+        main_interpolators_unmodified_ |= UINT64_C(0b1111) << (i * 4);
+      }
     } else {
       interpolated_value = const_float4_0_;
     }
@@ -3800,6 +3872,10 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
         builder_->createAccessChain(spv::StorageClassFunction,
                                     var_main_registers_, id_vector_temp_));
   }
+
+  // The beginning of the shader may be jumped back to.
+  main_interpolators_unmodified_ &=
+      ~current_shader().GetRegisterComponentsWrittenBeforeReentering(0);
 
   // Pixel parameters.
   if (param_gen_interpolator != UINT32_MAX) {
@@ -4261,6 +4337,18 @@ void SpirvShaderTranslator::StoreResult(const InstructionResult& result,
   uint32_t used_write_mask = result.GetUsedWriteMask();
   if (!used_write_mask) {
     return;
+  }
+
+  if (result.storage_target == InstructionStorageTarget::kRegister) {
+    if (result.storage_addressing_mode ==
+        InstructionStorageAddressingMode::kAbsolute) {
+      if (result.storage_index < xenos::kMaxInterpolators) {
+        main_interpolators_unmodified_ &=
+            ~(uint64_t(used_write_mask) << (result.storage_index * 4));
+      }
+    } else {
+      main_interpolators_unmodified_ = 0;
+    }
   }
 
   EnsureBuildPointAvailable();

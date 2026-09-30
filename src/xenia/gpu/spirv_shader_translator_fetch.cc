@@ -34,6 +34,14 @@ spv::Op DerivativeYOp() {
 }
 }  // namespace
 
+bool SpirvShaderTranslator::IsGuestPixelCenterFetchNeeded() const {
+  return is_pixel_shader() && !is_depth_only_fragment_shader_ &&
+         (GetCurrentDrawResolutionScaleX() > 1 ||
+          GetCurrentDrawResolutionScaleY() > 1) &&
+         (current_shader().point_fetch_coordinate_registers() &
+          GetModificationInterpolatorMask());
+}
+
 void SpirvShaderTranslator::ProcessVertexFetchInstruction(
     const ParsedVertexFetchInstruction& instr) {
   if (BisectSkipsInstruction()) {
@@ -1268,6 +1276,50 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
                            &coordinate_component_index);
       coordinates[coordinate_component_index] = coordinates_operand;
     }
+    // How much the coordinates change from the host pixel to the guest pixel
+    // center if they're an unmodified interpolant (see
+    // StartFragmentShaderInMain), for picking the guest texel in point sampled
+    // fetches.
+    spv::Id guest_center_deltas[2] = {};
+    const InstructionOperand& coordinates_operand_info = instr.operands[0];
+    bool coordinates_interpolated =
+        point_snap &&
+        coordinates_operand_info.storage_source ==
+            InstructionStorageSource::kRegister &&
+        coordinates_operand_info.storage_addressing_mode ==
+            InstructionStorageAddressingMode::kAbsolute &&
+        coordinates_operand_info.storage_index < xenos::kMaxInterpolators &&
+        var_main_interpolator_guest_center_deltas_[coordinates_operand_info
+                                                       .storage_index] !=
+            spv::NoResult &&
+        !coordinates_operand_info.is_absolute_value;
+    for (uint32_t i = 0; coordinates_interpolated && i < 2; ++i) {
+      SwizzleSource component = coordinates_operand_info.GetComponent(i);
+      coordinates_interpolated = component >= SwizzleSource::k0 ||
+                                 ((main_interpolators_unmodified_ >>
+                                   (coordinates_operand_info.storage_index * 4 +
+                                    uint32_t(component))) &
+                                  1);
+    }
+    if (coordinates_interpolated) {
+      spv::Id guest_center_delta = builder_->createLoad(
+          var_main_interpolator_guest_center_deltas_[coordinates_operand_info
+                                                         .storage_index],
+          spv::NoPrecision);
+      for (uint32_t i = 0; i < 2; ++i) {
+        SwizzleSource component = coordinates_operand_info.GetComponent(i);
+        if (component >= SwizzleSource::k0) {
+          guest_center_deltas[i] = const_float_0_;
+          continue;
+        }
+        guest_center_deltas[i] = builder_->createCompositeExtract(
+            guest_center_delta, type_float_, uint32_t(component));
+        if (coordinates_operand_info.is_negated) {
+          guest_center_deltas[i] = builder_->createUnaryOp(
+              spv::OpFNegate, type_float_, guest_center_deltas[i]);
+        }
+      }
+    }
 
     // Resolution scale doesn't need reverting for texture weights - weights are
     // calculated from fractional parts of coordinates which are
@@ -2099,32 +2151,100 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
         if (point_snap) {
           // Point sampled fetch constant uses the texel center in host texels
           // for a resolution scaled texture (the size already is) instead of
-          // the epsilon.
+          // the epsilon. Branching as the snapping is only needed for point
+          // sampled fetch constants and is uniform.
           spv::Id snap = builder_->createBinOp(
               spv::OpINotEqual, type_bool_,
               builder_->createBinOp(
                   spv::OpBitwiseAnd, type_uint_, integer_scale_bits_packed,
                   builder_->makeUintConstant(UINT32_C(1) << 26)),
               const_uint_0_);
+          SpirvBuilder::IfBuilder if_snap(
+              snap, spv::SelectionControlDontFlattenMask, *builder_);
+          spv::Id coordinates_snapped[2];
           for (uint32_t i = 0; i < 2; ++i) {
             spv::Id snapped = builder_->createUnaryBuiltinCall(
                 type_float_, ext_inst_glsl_std_450_, GLSLstd450Floor,
                 builder_->createNoContractionBinOp(spv::OpFMul, type_float_,
                                                    coordinates[i], size[i]));
-            snapped = builder_->createNoContractionBinOp(
+            if (guest_center_deltas[i] != spv::NoResult) {
+              // Stay within the host texels of the guest texel that the guest
+              // pixel center samples, keeping the host texel of this host
+              // pixel within it for detail if the texture is
+              // resolution-scaled.
+              uint32_t axis_texture_scale =
+                  i ? draw_resolution_scale_y_ : draw_resolution_scale_x_;
+              spv::Id texture_scale = const_float_1_;
+              if (is_texture_resolved != spv::NoResult &&
+                  axis_texture_scale > 1) {
+                texture_scale = builder_->createTriOp(
+                    spv::OpSelect, type_float_, is_texture_resolved,
+                    builder_->makeFloatConstant(float(axis_texture_scale)),
+                    const_float_1_);
+              }
+              // The host texel at the guest pixel center, rounded like the one
+              // of this host pixel so they agree when the delta is 0.
+              spv::Id guest_center_host_texel =
+                  builder_->createNoContractionBinOp(
+                      spv::OpFMul, type_float_,
+                      builder_->createNoContractionBinOp(
+                          spv::OpFAdd, type_float_, coordinates[i],
+                          guest_center_deltas[i]),
+                      size[i]);
+              if (texture_scale != const_float_1_ && offset_values[i]) {
+                // The offset was applied in host texels, while the guest
+                // steps by guest texels.
+                guest_center_host_texel = builder_->createNoContractionBinOp(
+                    spv::OpFAdd, type_float_, guest_center_host_texel,
+                    builder_->createNoContractionBinOp(
+                        spv::OpFMul, type_float_,
+                        builder_->makeFloatConstant(offset_values[i]),
+                        builder_->createNoContractionBinOp(
+                            spv::OpFSub, type_float_, texture_scale,
+                            const_float_1_)));
+              }
+              spv::Id guest_texel_host_texel_first =
+                  builder_->createNoContractionBinOp(
+                      spv::OpFMul, type_float_,
+                      builder_->createUnaryBuiltinCall(
+                          type_float_, ext_inst_glsl_std_450_, GLSLstd450Floor,
+                          builder_->createNoContractionBinOp(
+                              spv::OpFDiv, type_float_,
+                              builder_->createUnaryBuiltinCall(
+                                  type_float_, ext_inst_glsl_std_450_,
+                                  GLSLstd450Floor, guest_center_host_texel),
+                              texture_scale)),
+                      texture_scale);
+              snapped = builder_->createTriBuiltinCall(
+                  type_float_, ext_inst_glsl_std_450_, GLSLstd450FClamp,
+                  snapped, guest_texel_host_texel_first,
+                  builder_->createNoContractionBinOp(
+                      spv::OpFAdd, type_float_, guest_texel_host_texel_first,
+                      builder_->createNoContractionBinOp(
+                          spv::OpFSub, type_float_, texture_scale,
+                          const_float_1_)));
+            }
+            coordinates_snapped[i] = builder_->createNoContractionBinOp(
                 spv::OpFDiv, type_float_,
                 builder_->createNoContractionBinOp(
                     spv::OpFAdd, type_float_, snapped,
                     builder_->makeFloatConstant(0.5f)),
                 size[i]);
-            coordinates[i] = builder_->createTriOp(
-                spv::OpSelect, type_float_, snap, snapped,
+          }
+          if_snap.makeBeginElse();
+          spv::Id coordinates_epsilon[2];
+          for (uint32_t i = 0; i < 2; ++i) {
+            coordinates_epsilon[i] = builder_->createNoContractionBinOp(
+                spv::OpFAdd, type_float_, coordinates[i],
                 builder_->createNoContractionBinOp(
-                    spv::OpFAdd, type_float_, coordinates[i],
-                    builder_->createNoContractionBinOp(
-                        spv::OpFDiv, type_float_,
-                        builder_->makeFloatConstant(kTextureCoordEpsilon),
-                        size[i])));
+                    spv::OpFDiv, type_float_,
+                    builder_->makeFloatConstant(kTextureCoordEpsilon),
+                    size[i]));
+          }
+          if_snap.makeEndIf();
+          for (uint32_t i = 0; i < 2; ++i) {
+            coordinates[i] = if_snap.createMergePhi(coordinates_snapped[i],
+                                                    coordinates_epsilon[i]);
           }
         }
 
