@@ -1741,7 +1741,7 @@ bool MetalCommandProcessor::SetupContext() {
   zpd_draw_resolution_scale_y_ = texture_cache_->draw_resolution_scale_y();
 
   zpd_visibility_pool_ = std::make_unique<MetalZPDVisibilityPool>();
-  EnsureZPDQueryResources();
+  EnsureQueryResources();
 
   // Initialize shader translation pipeline
   if (!InitializeShaderTranslation()) {
@@ -2082,7 +2082,7 @@ void MetalCommandProcessor::ShutdownContext() {
     spirv_argbuf_pool_.clear();
   }
 
-  ShutdownZPDQueryResources();
+  ShutdownQueryResources();
   zpd_visibility_pool_.reset();
 
   if (texture_cache_) {
@@ -2726,13 +2726,12 @@ void MetalCommandProcessor::AwaitAllQueueOperationsCompletion() {
 // ZPD (occlusion query) backend overrides.
 // ============================================================================
 
-void MetalCommandProcessor::EnsureZPDQueryResources() {
+void MetalCommandProcessor::EnsureQueryResources() {
   if (GetZPDMode() == ZPDMode::kFake || !zpd_visibility_pool_) {
     return;
   }
-  if (!zpd_visibility_pool_->EnsureInitialized(device_,
-                                               kZPDQueryPoolCapacity)) {
-    // CanOpenZPDQuery gates on the pool, so OpenQuerySegment returns before
+  if (!zpd_visibility_pool_->EnsureInitialized(device_, kQueryPoolCapacity)) {
+    // CanOpenQuery gates on the pool, so OpenQuerySegment returns before
     // reaching the base class's own pool-readiness check that arms this. Left
     // unset, every report would resolve to zero samples - fully occluded -
     // instead of falling back to fake counts.
@@ -2740,7 +2739,7 @@ void MetalCommandProcessor::EnsureZPDQueryResources() {
   }
 }
 
-void MetalCommandProcessor::ShutdownZPDQueryResources() {
+void MetalCommandProcessor::ShutdownQueryResources() {
   if (!zpd_visibility_pool_) {
     return;
   }
@@ -2749,11 +2748,11 @@ void MetalCommandProcessor::ShutdownZPDQueryResources() {
   zpd_visibility_pool_->Shutdown();
 }
 
-bool MetalCommandProcessor::IsZPDQueryPoolReady() const {
+bool MetalCommandProcessor::IsQueryPoolReady() const {
   return zpd_visibility_pool_ && zpd_visibility_pool_->is_initialized();
 }
 
-bool MetalCommandProcessor::CanOpenZPDQuery() const {
+bool MetalCommandProcessor::CanOpenQuery() const {
   // Metal visibility queries can only be enabled on a render encoder whose
   // descriptor had visibilityResultBuffer set before the encoder was created.
   return current_command_buffer_ != nullptr &&
@@ -2761,12 +2760,12 @@ bool MetalCommandProcessor::CanOpenZPDQuery() const {
          render_encoder_has_zpd_visibility_;
 }
 
-CommandProcessor::QueryOpenResult MetalCommandProcessor::OpenZPDQuery(
+CommandProcessor::QueryOpenResult MetalCommandProcessor::OpenQuery(
     bool can_close_submission) {
-  if (!IsZPDQueryPoolReady()) {
+  if (!IsQueryPoolReady()) {
     return QueryOpenResult::kFailed;
   }
-  if (!CanOpenZPDQuery()) {
+  if (!CanOpenQuery()) {
     return QueryOpenResult::kDeferred;
   }
 
@@ -2828,8 +2827,9 @@ CommandProcessor::QueryOpenResult MetalCommandProcessor::OpenZPDQuery(
   return QueryOpenResult::kOpened;
 }
 
-bool MetalCommandProcessor::CloseZPDQuery(ReportHandle report_handle,
-                                          uint64_t& out_submission) {
+bool MetalCommandProcessor::CloseQuery(ReportHandle report_handle,
+                                       const VIZQueryHandle& viz,
+                                       uint64_t& out_submission) {
   if (!current_render_encoder_ || !render_encoder_has_zpd_visibility_ ||
       !zpd_active_query_.is_open()) {
     return false;
@@ -2847,6 +2847,7 @@ bool MetalCommandProcessor::CloseZPDQuery(ReportHandle report_handle,
   resolve.generation = zpd_active_query_.generation;
   resolve.scale_area = GetZPDScaleArea();
   resolve.report_handle = report_handle;
+  resolve.viz = viz;
   zpd_resolves_in_flight_.push_back(resolve);
 
   out_submission = resolve.submission;
@@ -2889,6 +2890,10 @@ void MetalCommandProcessor::PumpQueryResolves() {
       OnZPDQueryResolved(resolve.report_handle,
                          XenosZPDReport::FromNativeQuery(raw_samples),
                          resolve.scale_area);
+    }
+    if (resolve.viz.generation != kInvalidVIZGeneration) {
+      OnVIZQueryResolved(resolve.viz.id, resolve.viz.generation,
+                         raw_samples != 0);
     }
   }
 }
@@ -2961,9 +2966,15 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   const RegisterFile& regs = *register_file_;
   uint32_t normalized_color_mask = 0;
 
+  // VIZ surveys aren't measured on Metal yet, so every ID stays visible.
+  OnVIZSurveyDraw(false);
+
   // Check for copy mode
   xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
   if (edram_mode == xenos::EdramMode::kCopy) {
+    if (draw_util::IsVIZSurveyDraw(regs)) {
+      return true;
+    }
     return IssueCopy();
   }
 
@@ -3180,10 +3191,10 @@ void MetalCommandProcessor::ComputeDrawViewportInfo(
   // ZPD segments can't mix scales. The resolved sample count is divided by one
   // scale area per segment, so a change splits the segment.
   // Metal has no in-shader counter path, so a segment never counts Total.
-  UpdateZPDSegment(
+  UpdateQuerySegment(
       (texture_cache_ ? texture_cache_->draw_resolution_scale_x() : 1) *
           (texture_cache_ ? texture_cache_->draw_resolution_scale_y() : 1),
-      false);
+      false, draw_util::IsVIZSurveyDraw(regs));
   draw_util::GetViewportInfoArgs gviargs{};
   gviargs.Setup(
       texture_cache_ ? texture_cache_->draw_resolution_scale_x() : 1,
@@ -5478,9 +5489,9 @@ void MetalCommandProcessor::BeginCommandBuffer() {
   const bool zpd_segment_pending =
       GetZPDMode() != ZPDMode::kFake &&
       zpd_current_report_.handle != kInvalidReportHandle &&
-      zpd_active_segment_.segment_pending_begin;
+      active_segment_.segment_pending_begin;
   if (zpd_segment_pending) {
-    EnsureZPDQueryResources();
+    EnsureQueryResources();
   }
 
   if (!current_render_encoder_ && !render_encoder_resource_usage_.empty()) {
@@ -5489,7 +5500,7 @@ void MetalCommandProcessor::BeginCommandBuffer() {
 
   // An encoder created before the pool existed can never host a query, so
   // restart it rather than leave the segment pending indefinitely.
-  if (current_render_encoder_ && zpd_segment_pending && IsZPDQueryPoolReady() &&
+  if (current_render_encoder_ && zpd_segment_pending && IsQueryPoolReady() &&
       !render_encoder_has_zpd_visibility_) {
     EndRenderEncoder();
   }
@@ -5531,7 +5542,7 @@ void MetalCommandProcessor::BeginCommandBuffer() {
 
   // Only passes that host a query need the buffer. A segment pending later
   // restarts the encoder above to pick it up.
-  if (zpd_segment_pending && IsZPDQueryPoolReady()) {
+  if (zpd_segment_pending && IsQueryPoolReady()) {
     pass_descriptor->setVisibilityResultBuffer(
         zpd_visibility_pool_->visibility_buffer());
   } else {
@@ -5579,8 +5590,8 @@ void MetalCommandProcessor::BeginCommandBuffer() {
     current_render_encoder_->setLabel(
         NS::String::string("XeniaRenderEncoder", NS::UTF8StringEncoding));
     render_encoder_has_zpd_visibility_ =
-        IsZPDQueryPoolReady() && (pass_descriptor->visibilityResultBuffer() ==
-                                  zpd_visibility_pool_->visibility_buffer());
+        IsQueryPoolReady() && (pass_descriptor->visibilityResultBuffer() ==
+                               zpd_visibility_pool_->visibility_buffer());
     ff_blend_factor_valid_ = false;
     current_render_pass_descriptor_ = pass_descriptor;
 

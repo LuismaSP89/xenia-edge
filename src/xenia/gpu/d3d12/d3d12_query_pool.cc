@@ -7,7 +7,7 @@
  ******************************************************************************
  */
 
-#include "xenia/gpu/d3d12/d3d12_zpd_query_pool.h"
+#include "xenia/gpu/d3d12/d3d12_query_pool.h"
 
 #include <algorithm>
 
@@ -20,9 +20,10 @@ namespace xe {
 namespace gpu {
 namespace d3d12 {
 
-bool D3D12ZPDQueryPool::EnsureInitialized(
-    const ui::d3d12::D3D12Provider& provider, uint32_t requested_capacity,
-    bool can_recreate, bool initialize_counter) {
+bool D3D12QueryPool::EnsureInitialized(const ui::d3d12::D3D12Provider& provider,
+                                       uint32_t requested_capacity,
+                                       bool can_recreate,
+                                       bool initialize_counter) {
   if (rtv_initialized() && (!initialize_counter || counter_initialized()) &&
       (capacity_ == requested_capacity || !can_recreate)) {
     return true;
@@ -50,7 +51,7 @@ bool D3D12ZPDQueryPool::EnsureInitialized(
     if (FAILED(
             device->CreateQueryHeap(&heap_desc, IID_PPV_ARGS(&query_heap_)))) {
       XELOGW(
-          "D3D12ZPDQueryPool: Failed to create the ZPD query "
+          "D3D12QueryPool: Failed to create the ZPD query "
           "heap, falling back to fake sample counts.");
       return false;
     }
@@ -66,7 +67,7 @@ bool D3D12ZPDQueryPool::EnsureInitialized(
             D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
             IID_PPV_ARGS(&readback_buffer_)))) {
       XELOGW(
-          "D3D12ZPDQueryPool: Failed to allocate the ZPD query "
+          "D3D12QueryPool: Failed to allocate the ZPD query "
           "readback buffer, falling back to fake sample counts.");
       Shutdown();
       return false;
@@ -80,7 +81,7 @@ bool D3D12ZPDQueryPool::EnsureInitialized(
     void* mapping = nullptr;
     if (FAILED(readback_buffer_->Map(0, &read_range, &mapping))) {
       XELOGW(
-          "D3D12ZPDQueryPool: Failed to map the ZPD query "
+          "D3D12QueryPool: Failed to map the ZPD query "
           "readback buffer, falling back to fake sample counts.");
       Shutdown();
       return false;
@@ -125,7 +126,7 @@ bool D3D12ZPDQueryPool::EnsureInitialized(
           D3D12_RESOURCE_STATE_COMMON, nullptr,
           IID_PPV_ARGS(&counter_buffer_)))) {
     XELOGW(
-        "D3D12ZPDQueryPool: Failed to create the ZPD counter "
+        "D3D12QueryPool: Failed to create the ZPD counter "
         "buffer, falling back to fake sample counts.");
     return false;
   }
@@ -144,7 +145,7 @@ bool D3D12ZPDQueryPool::EnsureInitialized(
           D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
           IID_PPV_ARGS(&counter_readback_buffer_)))) {
     XELOGW(
-        "D3D12ZPDQueryPool: Failed to create the ZPD counter readback "
+        "D3D12QueryPool: Failed to create the ZPD counter readback "
         "buffer, falling back to fake sample counts.");
     counter_buffer_.Reset();
     return false;
@@ -158,7 +159,7 @@ bool D3D12ZPDQueryPool::EnsureInitialized(
   void* mapping = nullptr;
   if (FAILED(counter_readback_buffer_->Map(0, &read_range, &mapping))) {
     XELOGW(
-        "D3D12ZPDQueryPool: Failed to map the ZPD counter readback "
+        "D3D12QueryPool: Failed to map the ZPD counter readback "
         "buffer, falling back to fake sample counts.");
     counter_readback_buffer_.Reset();
     counter_buffer_.Reset();
@@ -169,7 +170,7 @@ bool D3D12ZPDQueryPool::EnsureInitialized(
   return true;
 }
 
-void D3D12ZPDQueryPool::Shutdown() {
+void D3D12QueryPool::Shutdown() {
   resolve_batch_indices_.clear();
   resolve_batch_ranges_.clear();
   counter_resolve_batch_indices_.clear();
@@ -200,8 +201,8 @@ void D3D12ZPDQueryPool::Shutdown() {
   counter_buffer_state_submission_ = UINT64_MAX;
 }
 
-bool D3D12ZPDQueryPool::AcquireQueryIndex(uint32_t& query_index,
-                                          uint32_t& query_generation) {
+bool D3D12QueryPool::AcquireQueryIndex(uint32_t& query_index,
+                                       uint32_t& query_generation) {
   if (free_indices_.empty()) {
     query_index = UINT32_MAX;
     query_generation = 0;
@@ -218,10 +219,10 @@ bool D3D12ZPDQueryPool::AcquireQueryIndex(uint32_t& query_index,
   return true;
 }
 
-void D3D12ZPDQueryPool::ReleaseQueryIndex(uint32_t query_index,
-                                          uint32_t query_generation) {
+void D3D12QueryPool::ReleaseQueryIndex(uint32_t query_index,
+                                       uint32_t query_generation) {
   if (!GenerationMatches(query_index, query_generation)) {
-    XELOGW("D3D12ZPDQueryPool: stale release index={} gen={}", query_index,
+    XELOGW("D3D12QueryPool: stale release index={} gen={}", query_index,
            query_generation);
     return;
   }
@@ -231,27 +232,27 @@ void D3D12ZPDQueryPool::ReleaseQueryIndex(uint32_t query_index,
   free_indices_.push_back(query_index);
 }
 
-bool D3D12ZPDQueryPool::GenerationMatches(uint32_t query_index,
-                                          uint32_t query_generation) const {
+bool D3D12QueryPool::GenerationMatches(uint32_t query_index,
+                                       uint32_t query_generation) const {
   return query_index < index_generations_.size() &&
          index_generations_[query_index] == query_generation;
 }
 
-void D3D12ZPDQueryPool::BeginQuery(DeferredCommandList& deferred_command_list,
-                                   uint32_t query_index) const {
+void D3D12QueryPool::BeginQuery(DeferredCommandList& deferred_command_list,
+                                uint32_t query_index) const {
   assert_true(query_heap_ && query_index < capacity_);
   deferred_command_list.D3DBeginQuery(query_heap_.Get(),
                                       D3D12_QUERY_TYPE_OCCLUSION, query_index);
 }
 
-void D3D12ZPDQueryPool::EndQuery(DeferredCommandList& deferred_command_list,
-                                 uint32_t query_index) const {
+void D3D12QueryPool::EndQuery(DeferredCommandList& deferred_command_list,
+                              uint32_t query_index) const {
   assert_true(query_heap_ && query_index < capacity_);
   deferred_command_list.D3DEndQuery(query_heap_.Get(),
                                     D3D12_QUERY_TYPE_OCCLUSION, query_index);
 }
 
-void D3D12ZPDQueryPool::QueueQueryResolve(uint32_t query_index, bool counter) {
+void D3D12QueryPool::QueueQueryResolve(uint32_t query_index, bool counter) {
   assert_true(query_index < capacity_);
   if (counter) {
     counter_resolve_batch_indices_.push_back(query_index);
@@ -260,7 +261,7 @@ void D3D12ZPDQueryPool::QueueQueryResolve(uint32_t query_index, bool counter) {
   resolve_batch_indices_.push_back(query_index);
 }
 
-void D3D12ZPDQueryPool::TransitionCounterBuffer(
+void D3D12QueryPool::TransitionCounterBuffer(
     DeferredCommandList& deferred_command_list, uint64_t submission,
     D3D12_RESOURCE_STATES new_state) {
   // The buffer decayed to COMMON when the previous submission finished, so
@@ -282,9 +283,8 @@ void D3D12ZPDQueryPool::TransitionCounterBuffer(
   counter_buffer_state_ = new_state;
 }
 
-void D3D12ZPDQueryPool::ClearCounter(DeferredCommandList& deferred_command_list,
-                                     uint64_t submission,
-                                     uint32_t query_index) {
+void D3D12QueryPool::ClearCounter(DeferredCommandList& deferred_command_list,
+                                  uint64_t submission, uint32_t query_index) {
   assert_true(counter_initialized() && query_index < capacity_);
   // WriteBufferImmediate writes as a copy, so the buffer must be in COPY_DEST.
   // The transition also orders this reset after any atomic adds from the
@@ -307,7 +307,7 @@ void D3D12ZPDQueryPool::ClearCounter(DeferredCommandList& deferred_command_list,
                           D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 }
 
-void D3D12ZPDQueryPool::FlushResolveBatch(
+void D3D12QueryPool::FlushResolveBatch(
     DeferredCommandList& deferred_command_list, uint64_t submission,
     bool submission_open) {
   if (!submission_open || (resolve_batch_indices_.empty() &&
@@ -380,9 +380,9 @@ void D3D12ZPDQueryPool::FlushResolveBatch(
                           D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 }
 
-XenosZPDReport D3D12ZPDQueryPool::GetQueryReadbackValue(uint32_t query_index,
-                                                        bool counter,
-                                                        bool hybrid) const {
+XenosZPDReport D3D12QueryPool::GetQueryReadbackValue(uint32_t query_index,
+                                                     bool counter,
+                                                     bool hybrid) const {
   assert_true(query_index < capacity_ && readback_mapping_);
   const uint32_t* counter_slot =
       counter_readback_mapping_

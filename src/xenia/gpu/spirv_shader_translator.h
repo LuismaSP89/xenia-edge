@@ -599,11 +599,11 @@ class SpirvShaderTranslator : public ShaderTranslator {
   std::vector<uint8_t> CreateDepthOnlyFragmentShader(
       Modification::DepthStencilMode depth_stencil_mode =
           Modification::DepthStencilMode::kNoModifiers,
-      bool zpd_total = false);
+      bool zpd_total = false, bool viz_survey = false);
   // FSI variant - specialized for one guest sample count instead of a host
   // depth / stencil mode.
   std::vector<uint8_t> CreateDepthOnlyFragmentShader(
-      xenos::MsaaSamples fsi_msaa_samples);
+      xenos::MsaaSamples fsi_msaa_samples, bool viz_survey = false);
 
   // Common functions useful not only for the translator, but also for EDRAM
   // emulation via conventional render targets.
@@ -1087,6 +1087,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // Is currently writing the empty depth-only pixel shader, such as for depth
   // and stencil testing with fragment shader interlock.
   bool is_depth_only_fragment_shader_ = false;
+  bool is_viz_survey_fragment_shader_ = false;
 
   std::unique_ptr<SpirvBuilder> builder_;
 

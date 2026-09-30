@@ -20,7 +20,7 @@
 #include "xenia/base/math.h"
 #include "xenia/base/profiling.h"
 #include "xenia/gpu/d3d12/d3d12_graphics_system.h"
-#include "xenia/gpu/d3d12/d3d12_zpd_query_pool.h"
+#include "xenia/gpu/d3d12/d3d12_query_pool.h"
 #include "xenia/gpu/draw_util.h"
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/packet_disassembler.h"
@@ -1405,9 +1405,9 @@ bool D3D12CommandProcessor::SetupContext() {
                           uint32_t(SystemBindlessView::kGammaRampPWLSRV)));
   }
 
-  // Initialize the ZPD occlusion query pool and resources.
-  zpd_host_query_pool_ = std::make_unique<D3D12ZPDQueryPool>();
-  EnsureZPDQueryResources();
+  // Initialize the occlusion query pool and resources.
+  host_query_pool_ = std::make_unique<D3D12QueryPool>();
+  EnsureQueryResources();
 
   pix_capture_requested_.store(false, std::memory_order_relaxed);
   pix_capturing_ = false;
@@ -1423,8 +1423,10 @@ void D3D12CommandProcessor::ShutdownContext() {
   ResetResolveReadWatch();
   DestroyResolveFaultCopy();
 
-  ShutdownZPDQueryResources();
-  zpd_host_query_pool_.reset();
+  ShutdownQueryResources();
+  host_query_pool_.reset();
+
+  ShutdownVIZQueryResources();
 
   ui::d3d12::util::ReleaseAndNull(scratch_buffer_);
   scratch_buffer_size_ = 0;
@@ -2562,9 +2564,17 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   ID3D12Device* device = GetD3D12Provider().GetDevice();
   const RegisterFile& regs = *register_file_;
 
+  // VIZ survey geometry associated with a specific 0:63 ID.
+  // draw_util keeps it normalized, so it only counts coverage here.
+  const bool viz_survey = draw_util::IsVIZSurveyDraw(regs);
+
   xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
   if (edram_mode == xenos::EdramMode::kCopy) {
     // Special copy handling.
+    if (viz_survey) {
+      OnVIZSurveyDraw(false);
+      return true;
+    }
     return IssueCopy();
   }
 
@@ -2629,6 +2639,16 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       ProvideResolveOutputForGpuWrite(memexport_range.base_address_dwords << 2,
                                       memexport_range.size_bytes);
     }
+  }
+
+  // A draw contributing to its VIZ ID without the kill bit counts
+  // at hi-Z before the pixel shader can reject anything.
+  if (!viz_survey && pixel_shader &&
+      (pixel_shader->kills_pixels() ||
+       (pixel_shader->writes_color_target(0) &&
+        draw_util::DoesCoverageDependOnAlpha(
+            regs.Get<reg::RB_COLORCONTROL>())))) {
+    OnVIZSurveyDraw(false);
   }
 
   if (!BeginSubmission(true)) {
@@ -2703,9 +2723,9 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   // Hybrid occlusion query draw, counting coverage into the Total counter.
   // Only depth or stencil tested draws w/o depth writes, so scene geometry
   // keeps early depth rejection, and nothing can fail without a test anyway.
+  // Surveys never count for a report.
   bool zpd_hybrid = zpd_hybrid_supported_ &&
-                    (zpd_active_segment_.segment_active ||
-                     zpd_active_segment_.segment_pending_begin) &&
+                    active_segment_.report_measuring() && !viz_survey &&
                     !normalized_depth_control.z_write_enable &&
                     (normalized_depth_control.z_enable ||
                      normalized_depth_control.stencil_enable);
@@ -2785,7 +2805,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           vertex_shader_translation, pixel_shader_translation,
           primitive_processing_result, normalized_depth_control,
           normalized_color_mask, apply_host_depth_polygon_offset, zpd_hybrid,
-          bound_depth_and_color_render_target_bits,
+          viz_survey, bound_depth_and_color_render_target_bits,
           bound_depth_and_color_render_target_formats, use_interpreter,
           &pipeline_handle, &root_signature)) {
     return false;
@@ -2806,14 +2826,13 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
               vertex_shader_translation, pixel_shader_translation,
               primitive_processing_result, normalized_depth_control,
               normalized_color_mask, apply_host_depth_polygon_offset, false,
-              bound_depth_and_color_render_target_bits,
+              viz_survey, bound_depth_and_color_render_target_bits,
               bound_depth_and_color_render_target_formats, use_interpreter,
               &pipeline_handle, &root_signature)) {
         return false;
       }
     }
-    if (zpd_active_segment_.segment_active ||
-        zpd_active_segment_.segment_pending_begin) {
+    if (active_segment_.report_measuring()) {
       // Occlusion-query draws need the real pixel shader - the no-op
       // placeholder skips the guest shader's pixel kills and would miscount.
       // Wait for it.
@@ -2863,6 +2882,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           vertex_shader->ucode_data_hash(), vertex_shader_modification.value,
           pixel_shader ? pixel_shader->ucode_data_hash() : 0,
           pixel_shader_modification.value);
+      OnVIZSurveyDraw(false);
       return true;
     }
   }
@@ -2876,6 +2896,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     pipeline_cache_->GetD3D12PipelineForDraw(pipeline_handle, &is_placeholder,
                                              &is_interpreter_placeholder);
     if (is_interpreter_placeholder) {
+      OnVIZSurveyDraw(false);
       return true;
     }
   }
@@ -2929,11 +2950,11 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   // which may be 1x1 because of draw_resolution_scale_threshold.
   uint32_t draw_resolution_scale_x = render_target_cache_->GetDrawScaleX();
   uint32_t draw_resolution_scale_y = render_target_cache_->GetDrawScaleY();
-  // ZPD segments can't mix scales or hybrid query Total counting.
+  // Segments can't mix scales, hybrid query Total counting, or VIZ IDs.
   // The resolved sample count is divided by one scale area per segment.
   // Needs to be split before the counter index goes into system constants.
-  UpdateZPDSegment(draw_resolution_scale_x * draw_resolution_scale_y,
-                   zpd_hybrid);
+  UpdateQuerySegment(draw_resolution_scale_x * draw_resolution_scale_y,
+                     zpd_hybrid, viz_survey);
   draw_util::ViewportInfo viewport_info;
   draw_util::GetViewportInfoArgs gviargs{};
 
@@ -3144,7 +3165,23 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   SetPrimitiveTopology(primitive_topology);
   // Must not call anything that may change the primitive topology from now on!
 
+  // Consumer VIZ draws run under SetPredication instead of blocking.
+  // EQUAL_ZERO skips the draw only when the survey saw nothing.
+  ID3D12Resource* predicate_buffer = nullptr;
+  uint64_t predicate_offset = 0;
+  if (viz_predicate_buffer_ && IsVIZPredicateArmed()) {
+    predicate_buffer = viz_predicate_buffer_.Get();
+    predicate_offset = uint64_t(viz_draw_predicate_.id) * sizeof(uint64_t);
+  }
+  D3D12_RESOURCE_BARRIER predicate_barrier;
+  if (predicate_buffer &&
+      GetVIZPredicateBufferBarrier(D3D12_RESOURCE_STATE_PREDICATION,
+                                   predicate_barrier)) {
+    barriers_.push_back(predicate_barrier);
+  }
+
   // Draw.
+  OnVIZSurveyDraw(true);
   if (primitive_processing_result.index_buffer_type ==
       PrimitiveProcessor::ProcessedIndexBufferType::kNone) {
     if (!memexport_used) {
@@ -3155,8 +3192,16 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                     : shared_memory_->UseForWriting();
     }
     SubmitBarriers();
+    if (predicate_buffer) {
+      deferred_command_list_.D3DSetPredication(
+          predicate_buffer, predicate_offset, D3D12_PREDICATION_OP_EQUAL_ZERO);
+    }
     deferred_command_list_.D3DDrawInstanced(
         primitive_processing_result.host_draw_vertex_count, 1, 0, 0);
+    if (predicate_buffer) {
+      deferred_command_list_.D3DSetPredication(nullptr, 0,
+                                               D3D12_PREDICATION_OP_EQUAL_ZERO);
+    }
   } else {
     D3D12_INDEX_BUFFER_VIEW index_buffer_view;
     index_buffer_view.SizeInBytes =
@@ -3226,8 +3271,16 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                     : shared_memory_->UseForReading();
     }
     SubmitBarriers();
+    if (predicate_buffer) {
+      deferred_command_list_.D3DSetPredication(
+          predicate_buffer, predicate_offset, D3D12_PREDICATION_OP_EQUAL_ZERO);
+    }
     deferred_command_list_.D3DDrawIndexedInstanced(
         primitive_processing_result.host_draw_vertex_count, 1, 0, 0, 0);
+    if (predicate_buffer) {
+      deferred_command_list_.D3DSetPredication(nullptr, 0,
+                                               D3D12_PREDICATION_OP_EQUAL_ZERO);
+    }
     if (scratch_index_buffer != nullptr) {
       ReleaseScratchGPUBuffer(scratch_index_buffer,
                               D3D12_RESOURCE_STATE_INDEX_BUFFER);
@@ -3838,7 +3891,7 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
 
     // Log guest ZPD report stats every 100 frames.
     if (GetZPDMode() != ZPDMode::kFake && cvars::occlusion_query_log &&
-        zpd_host_query_pool_ && zpd_host_query_pool_->capacity() &&
+        host_query_pool_ && host_query_pool_->capacity() &&
         frame_current_ - zpd_stats_.last_log_frame >= 100) {
       XELOGI(
           "Occlusion Query Stats (last 100 frames): "
@@ -3939,10 +3992,10 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
 
     // We can't close the command list with an active query - D3D12 requirement.
     // Close the active segment and emit ResolveQueryData before executing.
-    if (zpd_mode_ != ZPDMode::kFake) {
-      CloseQuerySegment();
-      RecordZPDResolveBatch();
-    }
+    // Both are no-ops without segments.
+    CloseQuerySegment();
+    host_query_pool_->FlushResolveBatch(
+        deferred_command_list_, GetCurrentSubmission(), submission_open_);
 
     pipeline_cache_->EndSubmission();
 
@@ -4446,9 +4499,9 @@ bool D3D12CommandProcessor::UpdateBindingsMesa(
     // Select the active occlusion query's counter slot so the FSI pixel shader
     // accumulates passed samples into it, UINT32_MAX outside a query.
     uint32_t zpd_fsi_counter_index = UINT32_MAX;
-    if (zpd_active_query_is_rov_ && zpd_active_query_index_ != UINT32_MAX &&
-        zpd_host_query_pool_->counter_initialized()) {
-      zpd_fsi_counter_index = zpd_active_query_index_;
+    if (active_query_is_rov_ && active_query_index_ != UINT32_MAX &&
+        host_query_pool_->counter_initialized()) {
+      zpd_fsi_counter_index = active_query_index_;
     }
     bool fsi_dirty = false;
     WriteFragmentShaderInterlockSystemConstants(
@@ -4460,9 +4513,9 @@ bool D3D12CommandProcessor::UpdateBindingsMesa(
     // Hybrid queries on the host render target path count pre-test coverage
     // into the same counter slot from the pixel shader.
     uint32_t zpd_counter_index = UINT32_MAX;
-    if (zpd_active_segment_.hybrid && zpd_active_query_index_ != UINT32_MAX &&
-        zpd_host_query_pool_->counter_initialized()) {
-      zpd_counter_index = zpd_active_query_index_;
+    if (active_segment_.hybrid && active_query_index_ != UINT32_MAX &&
+        host_query_pool_->counter_initialized()) {
+      zpd_counter_index = active_query_index_;
     }
     sc.zpd_fsi_counter_index = zpd_counter_index;
   }
@@ -4866,17 +4919,18 @@ bool D3D12CommandProcessor::SwitchToNewBindlessSamplerHeap() {
   return true;
 }
 
-void D3D12CommandProcessor::EnsureZPDQueryResources() {
-  if (zpd_mode_ == ZPDMode::kFake || !zpd_host_query_pool_) {
+void D3D12CommandProcessor::EnsureQueryResources() {
+  // VIZ surveys need the pool even when ZPD reports are faked.
+  if ((zpd_mode_ == ZPDMode::kFake && !cvars::occlusion_query_viz) ||
+      !host_query_pool_) {
     return;
   }
 
-  bool can_recreate = zpd_current_report_.handle == kInvalidReportHandle &&
-                      !zpd_active_segment_.segment_active &&
-                      zpd_active_query_index_ == UINT32_MAX &&
-                      !zpd_active_query_is_rov_ &&
-                      !zpd_host_query_pool_->has_pending_resolve_batch() &&
-                      zpd_resolves_in_flight_.empty();
+  bool can_recreate =
+      zpd_current_report_.handle == kInvalidReportHandle &&
+      !active_segment_.segment_active && active_query_index_ == UINT32_MAX &&
+      !active_query_is_rov_ && !host_query_pool_->has_pending_resolve_batch() &&
+      query_resolves_in_flight_.empty();
   bool rov_path = render_target_cache_ &&
                   render_target_cache_->GetPath() ==
                       RenderTargetCache::Path::kPixelShaderInterlock;
@@ -4888,12 +4942,12 @@ void D3D12CommandProcessor::EnsureZPDQueryResources() {
 
   ID3D12Resource* counter_buffer = nullptr;
   uint32_t counter_capacity = 0;
-  if (zpd_host_query_pool_->EnsureInitialized(
-          GetD3D12Provider(), kZPDQueryPoolCapacity, can_recreate,
-          can_initialize_counter) &&
-      zpd_host_query_pool_->counter_initialized()) {
-    counter_buffer = zpd_host_query_pool_->counter_buffer();
-    counter_capacity = zpd_host_query_pool_->capacity();
+  if (host_query_pool_->EnsureInitialized(GetD3D12Provider(),
+                                          kQueryPoolCapacity, can_recreate,
+                                          can_initialize_counter) &&
+      host_query_pool_->counter_initialized()) {
+    counter_buffer = host_query_pool_->counter_buffer();
+    counter_capacity = host_query_pool_->capacity();
   }
   if (bindless_resources_used_) {
     WriteZPDCounterRawUAVDescriptor(GetD3D12Provider().OffsetViewDescriptor(
@@ -4909,7 +4963,7 @@ void D3D12CommandProcessor::EnsureZPDQueryResources() {
     draw_view_bindful_heap_index_ =
         ui::d3d12::D3D12DescriptorHeapPool::kHeapIndexInvalid;
   }
-  if (zpd_rov_path_ && !IsZPDQueryPoolReady()) {
+  if (zpd_rov_path_ && !IsQueryPoolReady()) {
     if (!command_list_2_) {
       XELOGW(
           "ZPD/D3D12: Counter unavailable because CommandList2 is not "
@@ -4922,27 +4976,26 @@ void D3D12CommandProcessor::EnsureZPDQueryResources() {
   }
 }
 
-bool D3D12CommandProcessor::IsZPDQueryPoolReady() const {
-  if (!zpd_host_query_pool_ || !zpd_host_query_pool_->rtv_initialized()) {
+bool D3D12CommandProcessor::IsQueryPoolReady() const {
+  if (!host_query_pool_ || !host_query_pool_->rtv_initialized()) {
     return false;
   }
   if (!zpd_rov_path_) {
     return true;
   }
-  return zpd_host_query_pool_->counter_initialized();
+  return host_query_pool_->counter_initialized();
 }
 
-bool D3D12CommandProcessor::CanOpenZPDQuery() const { return submission_open_; }
+bool D3D12CommandProcessor::CanOpenQuery() const { return submission_open_; }
 
-CommandProcessor::QueryOpenResult D3D12CommandProcessor::OpenZPDQuery(
+CommandProcessor::QueryOpenResult D3D12CommandProcessor::OpenQuery(
     bool can_close_submission) {
-  bool use_rov_path =
-      zpd_rov_path_ && zpd_host_query_pool_->counter_initialized();
-  bool is_pool_exhausted = !zpd_host_query_pool_->has_free_indices();
+  bool use_rov_path = zpd_rov_path_ && host_query_pool_->counter_initialized();
+  bool is_pool_exhausted = !host_query_pool_->has_free_indices();
 
   if (is_pool_exhausted) {
     PumpQueryResolves();
-    is_pool_exhausted = !zpd_host_query_pool_->has_free_indices();
+    is_pool_exhausted = !host_query_pool_->has_free_indices();
   }
 
   if (is_pool_exhausted) {
@@ -4954,8 +5007,8 @@ CommandProcessor::QueryOpenResult D3D12CommandProcessor::OpenZPDQuery(
     // hand a slot back. If it's still in the open submission, close that when
     // allowed and let the next draw retry.
     uint64_t wait_for = 0;
-    if (!zpd_resolves_in_flight_.empty()) {
-      wait_for = zpd_resolves_in_flight_.front().submission;
+    if (!query_resolves_in_flight_.empty()) {
+      wait_for = query_resolves_in_flight_.front().submission;
     }
 
     uint64_t completed_submission = GetCompletedSubmission();
@@ -4976,7 +5029,7 @@ CommandProcessor::QueryOpenResult D3D12CommandProcessor::OpenZPDQuery(
 
       completion_timeline_->AwaitSubmissionAndUpdateCompleted(wait_for);
       PumpQueryResolves();
-      is_pool_exhausted = !zpd_host_query_pool_->has_free_indices();
+      is_pool_exhausted = !host_query_pool_->has_free_indices();
     }
   }
 
@@ -4984,85 +5037,120 @@ CommandProcessor::QueryOpenResult D3D12CommandProcessor::OpenZPDQuery(
     return QueryOpenResult::kDeferred;
   }
 
-  if (!zpd_host_query_pool_->AcquireQueryIndex(zpd_active_query_index_,
-                                               zpd_active_query_generation_)) {
+  if (!host_query_pool_->AcquireQueryIndex(active_query_index_,
+                                           active_query_generation_)) {
     return QueryOpenResult::kFailed;
   }
 
-  zpd_active_query_is_rov_ = use_rov_path;
-  zpd_active_segment_.hybrid = !use_rov_path && zpd_hybrid_supported_ &&
-                               zpd_active_segment_.count_total &&
-                               zpd_host_query_pool_->counter_initialized();
+  active_query_is_rov_ = use_rov_path;
+  active_segment_.hybrid = !use_rov_path && zpd_hybrid_supported_ &&
+                           active_segment_.count_total &&
+                           host_query_pool_->counter_initialized();
 
   // ROV queries don't use D3D12 occlusion queries at all, and hybrid queries
   // only use them for ZPass. While the segment is open, the translated pixel
   // shader accumulates depth/stencil testing into one counter slot selected
   // via zpd_counter_index. Clear the slot here so a recycled index never
   // inherits old counts.
-  if (zpd_active_query_is_rov_ || zpd_active_segment_.hybrid) {
-    zpd_host_query_pool_->ClearCounter(deferred_command_list_,
-                                       GetCurrentSubmission(),
-                                       zpd_active_query_index_);
-    if (zpd_active_query_is_rov_) {
+  if (active_query_is_rov_ || active_segment_.hybrid) {
+    host_query_pool_->ClearCounter(deferred_command_list_,
+                                   GetCurrentSubmission(), active_query_index_);
+    if (active_query_is_rov_) {
       return QueryOpenResult::kOpened;
     }
   }
 
-  zpd_host_query_pool_->BeginQuery(deferred_command_list_,
-                                   zpd_active_query_index_);
+  host_query_pool_->BeginQuery(deferred_command_list_, active_query_index_);
   return QueryOpenResult::kOpened;
 }
 
-bool D3D12CommandProcessor::CloseZPDQuery(ReportHandle report_handle,
-                                          uint64_t& out_submission) {
-  if (zpd_active_query_is_rov_) {
-    zpd_host_query_pool_->QueueQueryResolve(zpd_active_query_index_, true);
+bool D3D12CommandProcessor::CloseQuery(ReportHandle report_handle,
+                                       const VIZQueryHandle& viz,
+                                       uint64_t& out_submission) {
+  if (active_query_is_rov_) {
+    host_query_pool_->QueueQueryResolve(active_query_index_, true);
   } else {
-    zpd_host_query_pool_->EndQuery(deferred_command_list_,
-                                   zpd_active_query_index_);
-    zpd_host_query_pool_->QueueQueryResolve(zpd_active_query_index_, false);
-    if (zpd_active_segment_.hybrid) {
-      zpd_host_query_pool_->QueueQueryResolve(zpd_active_query_index_, true);
+    host_query_pool_->EndQuery(deferred_command_list_, active_query_index_);
+    host_query_pool_->QueueQueryResolve(active_query_index_, false);
+    if (active_segment_.hybrid) {
+      host_query_pool_->QueueQueryResolve(active_query_index_, true);
+    }
+  }
+
+  // SetPredication can't read the query heap or the counter, so also stage
+  // the count into the ID's predicate for draws still waiting on an answer.
+  if (viz.generation != kInvalidVIZGeneration) {
+    if (CanArmVIZPredicate(viz.id, viz.generation) &&
+        EnsureVIZPredicateBuffer()) {
+      const uint64_t predicate_offset = uint64_t(viz.id) * sizeof(uint64_t);
+      D3D12_RESOURCE_BARRIER predicate_barrier;
+      if (GetVIZPredicateBufferBarrier(D3D12_RESOURCE_STATE_COPY_DEST,
+                                       predicate_barrier)) {
+        barriers_.push_back(predicate_barrier);
+      }
+      SubmitBarriers();
+      if (active_query_is_rov_) {
+        // The ZPass lane of the counter slot, written by pixel shader atomics.
+        // The transition out of UNORDERED_ACCESS also orders the copy after
+        // them. Only the low dword is written. The high one reads zero from
+        // the buffer's zeroed creation, or from an earlier full resolve.
+        const uint64_t submission = GetCurrentSubmission();
+        host_query_pool_->TransitionCounterBuffer(
+            deferred_command_list_, submission,
+            D3D12_RESOURCE_STATE_COPY_SOURCE);
+        deferred_command_list_.D3DCopyBufferRegion(
+            viz_predicate_buffer_.Get(), predicate_offset,
+            host_query_pool_->counter_buffer(),
+            uint64_t(active_query_index_) * XenosZPDReport::kCounterSizeBytes +
+                XenosZPDReport::kZPass * sizeof(uint32_t),
+            sizeof(uint32_t));
+        host_query_pool_->TransitionCounterBuffer(
+            deferred_command_list_, submission,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+      } else {
+        deferred_command_list_.D3DResolveQueryData(
+            host_query_pool_->query_heap(), D3D12_QUERY_TYPE_OCCLUSION,
+            active_query_index_, 1, viz_predicate_buffer_.Get(),
+            predicate_offset);
+      }
+      ArmVIZPredicate(viz.id, viz.generation);
+    } else {
+      BlockVIZPredicate(viz.id, viz.generation);
     }
   }
 
   PendingQueryResolve resolve;
   resolve.submission = GetCurrentSubmission();
-  resolve.query_index = zpd_active_query_index_;
-  resolve.query_generation = zpd_active_query_generation_;
+  resolve.query_index = active_query_index_;
+  resolve.query_generation = active_query_generation_;
   resolve.scale_area = GetZPDScaleArea();
-  resolve.rov = zpd_active_query_is_rov_;
-  resolve.hybrid = zpd_active_segment_.hybrid;
+  resolve.rov = active_query_is_rov_;
+  resolve.hybrid = active_segment_.hybrid;
   resolve.report_handle = report_handle;
-  zpd_resolves_in_flight_.push_back(resolve);
+  resolve.viz = viz;
+  query_resolves_in_flight_.push_back(resolve);
 
   out_submission = resolve.submission;
 
-  zpd_active_query_index_ = UINT32_MAX;
-  zpd_active_query_generation_ = 0;
-  zpd_active_query_is_rov_ = false;
+  active_query_index_ = UINT32_MAX;
+  active_query_generation_ = 0;
+  active_query_is_rov_ = false;
   return true;
 }
 
 void D3D12CommandProcessor::PumpQueryResolves() {
-  if (!zpd_host_query_pool_ || zpd_resolves_in_flight_.empty()) {
+  if (!host_query_pool_ || query_resolves_in_flight_.empty()) {
     return;
   }
 
   uint64_t completed = GetCompletedSubmission();
-  while (!zpd_resolves_in_flight_.empty() &&
-         zpd_resolves_in_flight_.front().submission <= completed) {
-    PendingQueryResolve resolve = zpd_resolves_in_flight_.front();
-    zpd_resolves_in_flight_.pop_front();
+  while (!query_resolves_in_flight_.empty() &&
+         query_resolves_in_flight_.front().submission <= completed) {
+    PendingQueryResolve resolve = query_resolves_in_flight_.front();
+    query_resolves_in_flight_.pop_front();
 
-    if (zpd_host_query_pool_->GenerationMatches(resolve.query_index,
-                                                resolve.query_generation)) {
-      XenosZPDReport raw_counts = zpd_host_query_pool_->GetQueryReadbackValue(
-          resolve.query_index, resolve.rov, resolve.hybrid);
-      zpd_host_query_pool_->ReleaseQueryIndex(resolve.query_index,
-                                              resolve.query_generation);
-      OnZPDQueryResolved(resolve.report_handle, raw_counts, resolve.scale_area);
-    } else {
+    if (!host_query_pool_->GenerationMatches(resolve.query_index,
+                                             resolve.query_generation)) {
       if (cvars::occlusion_query_log) {
         XELOGI(
             "ZPD/D3D12: Dropping stale query index={} generation={} "
@@ -5070,6 +5158,18 @@ void D3D12CommandProcessor::PumpQueryResolves() {
             resolve.query_index, resolve.query_generation,
             resolve.report_handle);
       }
+      continue;
+    }
+    XenosZPDReport raw_counts = host_query_pool_->GetQueryReadbackValue(
+        resolve.query_index, resolve.rov, resolve.hybrid);
+    host_query_pool_->ReleaseQueryIndex(resolve.query_index,
+                                        resolve.query_generation);
+    if (resolve.report_handle != kInvalidReportHandle) {
+      OnZPDQueryResolved(resolve.report_handle, raw_counts, resolve.scale_area);
+    }
+    if (resolve.viz.generation != kInvalidVIZGeneration) {
+      OnVIZQueryResolved(resolve.viz.id, resolve.viz.generation,
+                         raw_counts.z_pass != 0);
     }
   }
 }
@@ -5106,9 +5206,68 @@ bool D3D12CommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
   return !report || !report->pending_segments;
 }
 
-void D3D12CommandProcessor::RecordZPDResolveBatch() {
-  zpd_host_query_pool_->FlushResolveBatch(
-      deferred_command_list_, GetCurrentSubmission(), submission_open_);
+bool D3D12CommandProcessor::EnsureVIZPredicateBuffer() {
+  if (viz_predicate_buffer_) {
+    return true;
+  }
+  if (viz_predicate_buffer_failed_) {
+    // Don't retry and relog on every close.
+    return false;
+  }
+
+  D3D12_RESOURCE_DESC buffer_desc;
+  ui::d3d12::util::FillBufferResourceDesc(
+      buffer_desc, sizeof(uint64_t) * viz_queries_.size(),
+      D3D12_RESOURCE_FLAG_NONE);
+  // Created zeroed, not with the usual not-zeroed flag. The counter staging
+  // path only writes the low dword of a predicate, and predication compares
+  // all 64 bits.
+  if (FAILED(GetD3D12Provider().GetDevice()->CreateCommittedResource(
+          &ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE,
+          &buffer_desc, D3D12_RESOURCE_STATE_COMMON, nullptr,
+          IID_PPV_ARGS(&viz_predicate_buffer_)))) {
+    XELOGE("VIZ/D3D12: Failed to create the predicate buffer");
+    viz_predicate_buffer_failed_ = true;
+    return false;
+  }
+
+  viz_predicate_buffer_state_ = D3D12_RESOURCE_STATE_COMMON;
+  viz_predicate_buffer_state_submission_ = UINT64_MAX;
+  return true;
+}
+
+bool D3D12CommandProcessor::GetVIZPredicateBufferBarrier(
+    D3D12_RESOURCE_STATES new_state, D3D12_RESOURCE_BARRIER& barrier_out) {
+  // The buffer decayed to COMMON when the previous submission finished.
+  const uint64_t submission = GetCurrentSubmission();
+  if (submission != viz_predicate_buffer_state_submission_) {
+    viz_predicate_buffer_state_ = D3D12_RESOURCE_STATE_COMMON;
+    viz_predicate_buffer_state_submission_ = submission;
+  }
+  if (viz_predicate_buffer_state_ == new_state) {
+    return false;
+  }
+  barrier_out.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  barrier_out.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+  barrier_out.Transition.pResource = viz_predicate_buffer_.Get();
+  barrier_out.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  barrier_out.Transition.StateBefore = viz_predicate_buffer_state_;
+  barrier_out.Transition.StateAfter = new_state;
+  viz_predicate_buffer_state_ = new_state;
+  return true;
+}
+
+void D3D12CommandProcessor::AwaitVIZQueryResolve(uint64_t wait_for_submission) {
+  if (wait_for_submission >= GetCurrentSubmission()) {
+    return;
+  }
+
+  if (wait_for_submission > GetCompletedSubmission()) {
+    completion_timeline_->AwaitSubmissionAndUpdateCompleted(
+        wait_for_submission);
+  }
+
+  PumpQueryResolves();
 }
 
 void D3D12CommandProcessor::WriteGammaRampSRV(
@@ -5135,10 +5294,10 @@ void D3D12CommandProcessor::WriteGammaRampSRV(
 void D3D12CommandProcessor::WriteZPDCounterRawUAVDescriptor(
     D3D12_CPU_DESCRIPTOR_HANDLE handle) const {
   ID3D12Device* device = GetD3D12Provider().GetDevice();
-  if (zpd_host_query_pool_ && zpd_host_query_pool_->counter_initialized()) {
+  if (host_query_pool_ && host_query_pool_->counter_initialized()) {
     ui::d3d12::util::CreateBufferRawUAV(
-        device, handle, zpd_host_query_pool_->counter_buffer(),
-        XenosZPDReport::kCounterSizeBytes * zpd_host_query_pool_->capacity());
+        device, handle, host_query_pool_->counter_buffer(),
+        XenosZPDReport::kCounterSizeBytes * host_query_pool_->capacity());
     return;
   }
 

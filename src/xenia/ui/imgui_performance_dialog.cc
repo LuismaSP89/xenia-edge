@@ -57,6 +57,7 @@ void ImGuiPerformanceDialog::LoadCurrentSettings() {
   } else {
     occlusion_query_mode_ = 0;  // Default to "fake"
   }
+  occlusion_query_viz_ = cvars::occlusion_query_viz;
 
   // Load Memory Export settings
   memexport_enable_ = cvars::memexport_enable;
@@ -140,6 +141,13 @@ void ImGuiPerformanceDialog::OnOcclusionQueryChanged(int value) {
 
   const char* mode_names[] = {"Fake", "Fast", "Fast-Alt", "Strict"};
   ShowNotification("Occlusion Query Mode", mode_names[static_cast<int>(mode)]);
+}
+
+void ImGuiPerformanceDialog::OnOcclusionQueryVIZChanged(bool enabled) {
+  gpu::SaveGPUSetting(gpu::GPUSetting::OcclusionQueryVIZ, enabled);
+  config::SaveGameConfigSetting(emulator_window_->emulator(), "GPU",
+                                "occlusion_query_viz", enabled);
+  ShowNotification("VIZ Queries", enabled ? "Enabled" : "Disabled");
 }
 
 void ImGuiPerformanceDialog::OnFramerateLimitChanged(int value) {
@@ -256,6 +264,10 @@ void ImGuiPerformanceDialog::OnDraw(ImGuiIO& io) {
       if (i < 3) {
         ImGui::SameLine();
       }
+    }
+    if (ImGui::Checkbox("Skip draws hidden by VIZ queries",
+                        &occlusion_query_viz_)) {
+      OnOcclusionQueryVIZChanged(occlusion_query_viz_);
     }
     ImGui::PopID();
     ImGui::Unindent(10);

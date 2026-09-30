@@ -183,7 +183,8 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
       reg::RB_DEPTHCONTROL normalized_depth_control,
       uint32_t normalized_color_mask,
       VulkanRenderTargetCache::RenderPassKey render_pass_key,
-      bool use_interpreter, bool zpd_total, Pipeline** pipeline_out);
+      bool use_interpreter, bool zpd_total, bool viz_survey,
+      Pipeline** pipeline_out);
 
   // True while this draw must be fed the ucode interpreter's inputs (full float
   // constants + ucode location). False once hot-swapped to the real VS.
@@ -303,6 +304,9 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
     // Selects counting the depth-only fragment shader
     // when there's no guest PS.
     uint32_t zpd_total : 1;  // 10
+    // Survey draw for conditional rendering (FSI + occlusion_query_viz).
+    // Selects the depth-only fragment shader. Surveys don't have a guest PS.
+    uint32_t viz_survey : 1;  // 11
 
     // Filled only for the attachments present in the render pass object.
     PipelineRenderTarget render_targets[xenos::kMaxColorRenderTargets];
@@ -327,7 +331,7 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
       }
     };
 
-    static constexpr uint32_t kVersion = 0x20260903;
+    static constexpr uint32_t kVersion = 0x20260920;
   });
 
   // Pipeline storage constants.
@@ -383,7 +387,7 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
       reg::RB_DEPTHCONTROL normalized_depth_control,
       uint32_t normalized_color_mask,
       VulkanRenderTargetCache::RenderPassKey render_pass_key, bool zpd_total,
-      PipelineDescription& description_out) const;
+      bool viz_survey, PipelineDescription& description_out) const;
 
   // Whether the pipeline for the given description is supported by the device.
   bool ArePipelineRequirementsMet(const PipelineDescription& description) const;
@@ -501,6 +505,9 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
   // One per guest sample count - FSI shaders are specialized for it.
   VkShaderModule
       depth_only_fragment_shaders_[size_t(xenos::MsaaSamples::k4X) + 1] = {};
+  // VIZ survey variants of the above, counting only ZPass as a flag.
+  VkShaderModule
+      viz_survey_fragment_shaders_[size_t(xenos::MsaaSamples::k4X) + 1] = {};
   // Host render target path - keeps FBO draws that write nothing rasterized
   // for occlusion queries.
   VkShaderModule depth_only_fragment_shader_ = VK_NULL_HANDLE;

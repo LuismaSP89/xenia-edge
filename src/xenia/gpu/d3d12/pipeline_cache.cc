@@ -200,6 +200,15 @@ bool PipelineCache::Initialize() {
             UINT32_C(1) << i);
         return false;
       }
+      std::vector<uint8_t> viz_survey_spirv =
+          guest_shader_cache_.translator().CreateDepthOnlyFragmentShader(
+              xenos::MsaaSamples(i), true);
+      if (!viz_survey_spirv.empty()) {
+        mesa_viz_survey_rov_pixel_shaders_[i] = SpirvToDxilCompiler::Translate(
+            reinterpret_cast<const uint32_t*>(viz_survey_spirv.data()),
+            viz_survey_spirv.size() / sizeof(uint32_t),
+            SpirvToDxilCompiler::Stage::kPixel, /*lower_to_bindless=*/true);
+      }
     }
   }
 
@@ -1129,7 +1138,8 @@ bool PipelineCache::ConfigurePipeline(
     const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
     reg::RB_DEPTHCONTROL normalized_depth_control,
     uint32_t normalized_color_mask, bool apply_polygon_offset_in_shader,
-    bool zpd_total, uint32_t bound_depth_and_color_render_target_bits,
+    bool zpd_total, bool viz_survey,
+    uint32_t bound_depth_and_color_render_target_bits,
     const uint32_t* bound_depth_and_color_render_target_formats,
     bool use_interpreter, void** pipeline_handle_out,
     ID3D12RootSignature** root_signature_out) {
@@ -1206,7 +1216,7 @@ bool PipelineCache::ConfigurePipeline(
   if (!GetCurrentStateDescription(
           vertex_shader, pixel_shader, primitive_processing_result,
           normalized_depth_control, normalized_color_mask,
-          apply_polygon_offset_in_shader, zpd_total,
+          apply_polygon_offset_in_shader, zpd_total, viz_survey,
           bound_depth_and_color_render_target_bits,
           bound_depth_and_color_render_target_formats, runtime_description)) {
     return false;
@@ -1552,7 +1562,8 @@ bool PipelineCache::GetCurrentStateDescription(
     const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
     reg::RB_DEPTHCONTROL normalized_depth_control,
     uint32_t normalized_color_mask, bool depth_bias_in_pixel_shader,
-    bool zpd_total, uint32_t bound_depth_and_color_render_target_bits,
+    bool zpd_total, bool viz_survey,
+    uint32_t bound_depth_and_color_render_target_bits,
     const uint32_t* bound_depth_and_color_render_target_formats,
     PipelineRuntimeDescription& runtime_description_out) {
   PipelineDescription& description_out = runtime_description_out.description;
@@ -1734,7 +1745,8 @@ bool PipelineCache::GetCurrentStateDescription(
     description_out.resolution_scale_native =
         uint32_t(render_target_cache_.IsDrawScaleNative());
   }
-  description_out.zpd_total = uint32_t(zpd_total);
+  description_out.counting_depth_only =
+      uint32_t(edram_rov_used ? viz_survey : zpd_total);
   if (tessellated && cvars::d3d12_tessellation_wireframe) {
     description_out.fill_mode_wireframe = 1;
   }
@@ -2132,9 +2144,16 @@ ID3D12PipelineState* PipelineCache::CreateD3D12Pipeline(
   // Writes EDRAM depth/stencil and no color. The no-op is only a fallback for
   // a ROV depth-only shader that could not be generated.
   auto use_rov_depth_only_pixel_shader = [&]() {
-    const std::vector<uint8_t>& mesa_depth_only_rov_pixel_shader =
-        mesa_depth_only_rov_pixel_shaders_[size_t(
+    // VIZ surveys only use the ZPass counter.
+    const std::vector<uint8_t>& mesa_viz_survey_rov_pixel_shader =
+        mesa_viz_survey_rov_pixel_shaders_[size_t(
             description.guest_msaa_samples)];
+    const std::vector<uint8_t>& mesa_depth_only_rov_pixel_shader =
+        description.counting_depth_only &&
+                !mesa_viz_survey_rov_pixel_shader.empty()
+            ? mesa_viz_survey_rov_pixel_shader
+            : mesa_depth_only_rov_pixel_shaders_[size_t(
+                  description.guest_msaa_samples)];
     if (!mesa_depth_only_rov_pixel_shader.empty()) {
       state_desc.PS.pShaderBytecode = mesa_depth_only_rov_pixel_shader.data();
       state_desc.PS.BytecodeLength = mesa_depth_only_rov_pixel_shader.size();
@@ -2173,7 +2192,7 @@ ID3D12PipelineState* PipelineCache::CreateD3D12Pipeline(
              runtime_description.pixel_shader->shader().ucode_data_hash());
       return nullptr;
     }
-  } else if (description.zpd_total &&
+  } else if (!edram_rov_used && description.counting_depth_only &&
              !zpd_total_depth_only_pixel_shader_.empty()) {
     // Native ZPD query without a guest pixel shader.
     // Coverage still has to be counted.

@@ -279,8 +279,10 @@ uint64_t SpirvShaderTranslator::GetDefaultPixelShaderModification(
 }
 
 std::vector<uint8_t> SpirvShaderTranslator::CreateDepthOnlyFragmentShader(
-    Modification::DepthStencilMode depth_stencil_mode, bool zpd_total) {
+    Modification::DepthStencilMode depth_stencil_mode, bool zpd_total,
+    bool viz_survey) {
   is_depth_only_fragment_shader_ = true;
+  is_viz_survey_fragment_shader_ = viz_survey;
   // TODO(Triang3l): Handle in a nicer way (is_depth_only_fragment_shader_ is a
   // leftover from when a Shader object wasn't used during translation).
   Shader shader(xenos::ShaderType::kPixel, 0, nullptr, 0);
@@ -293,15 +295,17 @@ std::vector<uint8_t> SpirvShaderTranslator::CreateDepthOnlyFragmentShader(
       *shader.GetOrCreateTranslation(modification.value);
   TranslateAnalyzedShader(translation);
   is_depth_only_fragment_shader_ = false;
+  is_viz_survey_fragment_shader_ = false;
   return translation.translated_binary();
 }
 
 std::vector<uint8_t> SpirvShaderTranslator::CreateDepthOnlyFragmentShader(
-    xenos::MsaaSamples fsi_msaa_samples) {
+    xenos::MsaaSamples fsi_msaa_samples, bool viz_survey) {
   // The sample count lives in depth_stencil_mode's bits on the FSI path.
   Modification modification(0);
   modification.pixel.set_fsi_msaa_samples(fsi_msaa_samples);
-  return CreateDepthOnlyFragmentShader(modification.pixel.depth_stencil_mode);
+  return CreateDepthOnlyFragmentShader(modification.pixel.depth_stencil_mode,
+                                       false, viz_survey);
 }
 
 void SpirvShaderTranslator::Reset() {

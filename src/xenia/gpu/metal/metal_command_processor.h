@@ -169,13 +169,13 @@ class MetalCommandProcessor : public CommandProcessor {
   // visibility counting is a render encoder mode writing into an offset of the
   // pass descriptor's visibility result buffer, so the buffer must be attached
   // before the encoder is created and a segment can't outlive its encoder.
-  void EnsureZPDQueryResources() override;
-  void ShutdownZPDQueryResources() override;
-  bool IsZPDQueryPoolReady() const override;
-  bool CanOpenZPDQuery() const override;
-  QueryOpenResult OpenZPDQuery(bool can_close_submission) override;
-  bool CloseZPDQuery(ReportHandle report_handle,
-                     uint64_t& out_submission) override;
+  void EnsureQueryResources() override;
+  void ShutdownQueryResources() override;
+  bool IsQueryPoolReady() const override;
+  bool CanOpenQuery() const override;
+  QueryOpenResult OpenQuery(bool can_close_submission) override;
+  bool CloseQuery(ReportHandle report_handle, const VIZQueryHandle& viz,
+                  uint64_t& out_submission) override;
   void PumpQueryResolves() override;
   bool AwaitQueryResolve(ReportHandle report_handle,
                          uint64_t wait_for_submission) override;
@@ -906,6 +906,7 @@ class MetalCommandProcessor : public CommandProcessor {
     uint32_t generation = 0;
     uint32_t scale_area = 1;
     ReportHandle report_handle = kInvalidReportHandle;
+    VIZQueryHandle viz;
   };
   struct MetalZPDActiveQuery {
     uint32_t index = UINT32_MAX;

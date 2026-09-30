@@ -162,7 +162,8 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
       const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
       reg::RB_DEPTHCONTROL normalized_depth_control,
       uint32_t normalized_color_mask, bool apply_polygon_offset_in_shader,
-      bool zpd_total, uint32_t bound_depth_and_color_render_target_bits,
+      bool zpd_total, bool viz_survey,
+      uint32_t bound_depth_and_color_render_target_bits,
       const uint32_t* bound_depth_and_color_render_targets_formats,
       bool use_interpreter, void** pipeline_handle_out,
       ID3D12RootSignature** root_signature_out);
@@ -331,9 +332,11 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
     // for the guest count. host_msaa_samples can't, guest 2x is rasterized as
     // host 4x there.
     xenos::MsaaSamples guest_msaa_samples : 2;  // 31
-    // Hybrid occlusion query draw (RTV + shader counting for Total).
     // Selects the counting depth-only pixel shader when there's no guest PS.
-    uint32_t zpd_total : 1;  // 32
+    // RTV: hybrid occlusion query draw (shader counting for Total).
+    // ROV: VIZ survey draw (occlusion_query_viz), ZPass as a flag.
+    // Hybrid queries are RTV only, so the two never meet.
+    uint32_t counting_depth_only : 1;  // 32
 
     uint32_t stencil_write_mask : 8;                   // 8
     xenos::StencilOp stencil_front_fail_op : 3;        // 11
@@ -352,8 +355,8 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
     // the canonical SPIR-V (spirv_to_dxil) modifications, not DXBC; then
     // again for the constant-alpha blend state; then again for
     // guest_msaa_samples changing the bitfield layout; then again for
-    // zpd_total.
-    static constexpr uint32_t kVersion = 0x20260923;
+    // zpd_total; then again for it also covering VIZ surveys.
+    static constexpr uint32_t kVersion = 0x20260930;
   });
 
   XEPACKEDSTRUCT(PipelineStoredDescription, {
@@ -453,7 +456,8 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
       const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
       reg::RB_DEPTHCONTROL normalized_depth_control,
       uint32_t normalized_color_mask, bool depth_bias_in_pixel_shader,
-      bool zpd_total, uint32_t bound_depth_and_color_render_target_bits,
+      bool zpd_total, bool viz_survey,
+      uint32_t bound_depth_and_color_render_target_bits,
       const uint32_t* bound_depth_and_color_render_target_formats,
       PipelineRuntimeDescription& runtime_description_out);
 
@@ -519,6 +523,9 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
   // back to the no-op placeholder_ps).
   std::vector<uint8_t>
       mesa_depth_only_rov_pixel_shaders_[size_t(xenos::MsaaSamples::k4X) + 1];
+  // VIZ survey variants of the above, counting only ZPass as a flag.
+  std::vector<uint8_t>
+      mesa_viz_survey_rov_pixel_shaders_[size_t(xenos::MsaaSamples::k4X) + 1];
 
   // Ucode hash -> shader.
   std::unordered_map<uint64_t, SpirvShader*, xe::hash::IdentityHasher<uint64_t>>
