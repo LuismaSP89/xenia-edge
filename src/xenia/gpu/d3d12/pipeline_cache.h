@@ -323,20 +323,17 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
     uint32_t depth_write : 1;                         // 18
     uint32_t stencil_enable : 1;                      // 19
     uint32_t stencil_read_mask : 8;                   // 27
-    // Marks pipelines that use the spirv_to_dxil (Mesa) path so they keep
-    // their own cache entries.
-    uint32_t use_mesa_dxil : 1;  // 28
     // Native draw (scale threshold), keeps slope-scale unscaled.
-    uint32_t resolution_scale_native : 1;  // 29
+    uint32_t resolution_scale_native : 1;  // 28
     // ROV only - selects the depth-only pixel shader, which is specialized
     // for the guest count. host_msaa_samples can't, guest 2x is rasterized as
     // host 4x there.
-    xenos::MsaaSamples guest_msaa_samples : 2;  // 31
+    xenos::MsaaSamples guest_msaa_samples : 2;  // 30
     // Selects the counting depth-only pixel shader when there's no guest PS.
     // RTV: hybrid occlusion query draw (shader counting for Total).
     // ROV: VIZ survey draw (occlusion_query_viz), ZPass as a flag.
     // Hybrid queries are RTV only, so the two never meet.
-    uint32_t counting_depth_only : 1;  // 32
+    uint32_t counting_depth_only : 1;  // 31
 
     uint32_t stencil_write_mask : 8;                   // 8
     xenos::StencilOp stencil_front_fail_op : 3;        // 11
@@ -355,8 +352,9 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
     // the canonical SPIR-V (spirv_to_dxil) modifications, not DXBC; then
     // again for the constant-alpha blend state; then again for
     // guest_msaa_samples changing the bitfield layout; then again for
-    // zpd_total; then again for it also covering VIZ surveys.
-    static constexpr uint32_t kVersion = 0x20260930;
+    // zpd_total; then again for it also covering VIZ surveys; then again for
+    // dropping use_mesa_dxil.
+    static constexpr uint32_t kVersion = 0x20261001;
   });
 
   XEPACKEDSTRUCT(PipelineStoredDescription, {
@@ -384,8 +382,8 @@ class PipelineCache : public GuestSpirvShaderCache::Host {
     Shader::Translation* mesa_vertex_translation = nullptr;
     Shader::Translation* mesa_pixel_translation = nullptr;
     // Mesa DXIL for the built-in geometry shader (primitive expansion). When
-    // set alongside use_mesa_dxil, the pipeline binds it as the geometry
-    // shader. Points into mesa_geometry_dxil_cache_ (never erased).
+    // set, the pipeline binds it as the geometry shader. Points into
+    // mesa_geometry_dxil_cache_ (never erased).
     const std::vector<uint8_t>* mesa_geometry_dxil = nullptr;
     // Tessellation: the host vertex and hull shaders, produced together with
     // the guest domain shader (held in mesa_vertex_dxil, bound as the DS) by
