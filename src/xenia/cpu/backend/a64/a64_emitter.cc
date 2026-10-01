@@ -362,6 +362,9 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, EmitFunctionInfo& func_info) {
   // ========================================================================
   // EPILOG
   // ========================================================================
+  // Falling into the epilog skips RETURN, which leaves the Fpu mode callers
+  // assume.
+  EnsureFpuFpcrModeForTransition();
   L(*epilog_label_);
   epilog_label_ = nullptr;
   // A call as the last instruction leaves the check unconsumed.
@@ -1035,7 +1038,6 @@ void A64Emitter::EmitDynamicCallLookup(bool tail) {
 void A64Emitter::CallNative(void* fn) { CallNativeSafe(fn); }
 
 void A64Emitter::CallNativeSafe(void* fn) {
-  ForgetFpcrMode();
   DropPhysicalRemapBound();
   // Sequences may emit this on a conditional path, so the mode after it is the
   // meet of the call path (Fpu) and the mode on entry.

@@ -180,6 +180,8 @@ EMITTER_OPCODE_TABLE(OPCODE_BRANCH_FALSE, BRANCH_FALSE_I8, BRANCH_FALSE_I16,
 // ============================================================================
 struct RETURN : Sequence<RETURN, I<OPCODE_RETURN, VoidOp>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
+    // Callers assume a callee returns in the Fpu mode.
+    e.EnsureFpuFpcrModeForTransition();
     // Jump to epilog (unless this is the last instruction before epilog).
     if (i.instr->next || i.instr->block->next) {
       e.b(e.epilog_label());
@@ -355,24 +357,28 @@ EMITTER_OPCODE_TABLE(OPCODE_TRAP_TRUE, TRAP_TRUE_I8, TRAP_TRUE_I16,
 struct RETURN_TRUE_I8
     : Sequence<RETURN_TRUE_I8, I<OPCODE_RETURN_TRUE, VoidOp, I8Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
+    e.EnsureFpuFpcrModeForTransition();
     e.cbnz(i.src1, e.epilog_label());
   }
 };
 struct RETURN_TRUE_I16
     : Sequence<RETURN_TRUE_I16, I<OPCODE_RETURN_TRUE, VoidOp, I16Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
+    e.EnsureFpuFpcrModeForTransition();
     e.cbnz(i.src1, e.epilog_label());
   }
 };
 struct RETURN_TRUE_I32
     : Sequence<RETURN_TRUE_I32, I<OPCODE_RETURN_TRUE, VoidOp, I32Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
+    e.EnsureFpuFpcrModeForTransition();
     e.cbnz(i.src1, e.epilog_label());
   }
 };
 struct RETURN_TRUE_I64
     : Sequence<RETURN_TRUE_I64, I<OPCODE_RETURN_TRUE, VoidOp, I64Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
+    e.EnsureFpuFpcrModeForTransition();
     e.cbnz(i.src1, e.epilog_label());
   }
 };
