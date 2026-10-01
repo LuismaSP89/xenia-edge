@@ -214,9 +214,16 @@ TEST_CASE("OR_OF_FLOAT_COMPARES_NOT_MERGED_ACROSS_CONSTANTS", "[simplify]") {
     // Wrongly merged, this becomes x <= 1.0.
     auto lt_or_eq = b.Or(b.CompareSLT(x, b.LoadConstantFloat64(1.0)),
                          b.CompareEQ(x, b.LoadConstantFloat64(2.0)));
+    // Wrongly merged, this becomes always true.
+    auto eq_or_ne = b.Or(b.CompareEQ(x, b.LoadConstantFloat64(1.0)),
+                         b.CompareNE(x, b.LoadConstantFloat64(2.0)));
     StoreGPR(b, 3, b.ZeroExtend(lt_or_eq, INT64_TYPE));
+    StoreGPR(b, 4, b.ZeroExtend(eq_or_ne, INT64_TYPE));
     b.Return();
   });
   test.Run([](PPCContext* ctx) { ctx->f[4] = 2.0; },
-           [](PPCContext* ctx) { REQUIRE(ctx->r[3] == 1); });
+           [](PPCContext* ctx) {
+             REQUIRE(ctx->r[3] == 1);
+             REQUIRE(ctx->r[4] == 0);
+           });
 }
