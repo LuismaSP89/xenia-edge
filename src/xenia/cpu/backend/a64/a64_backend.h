@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 
 #include "xenia/base/bit_map.h"
@@ -162,7 +163,29 @@ struct A64BackendContext {
 constexpr unsigned int DEFAULT_FPU_FPCR = 0;
 // Default FPCR for VMX mode (flush to zero, preserve NaN payloads).
 constexpr unsigned int DEFAULT_VMX_FPCR = (1 << 24);  // FZ
-// DN is clear in every FPCR image; the NaN fixups rely on it.
+// PPC rounding control (RN in bits 0-1, NI in bit 2) to FPCR. RMode is bits
+// 23:22, and NI maps to FZ (bit 24).
+inline constexpr uint32_t kGuestFpcrTable[8] = {
+    (0b00 << 22),              // PPC 0: nearest, IEEE
+    (0b11 << 22),              // PPC 1: toward zero, IEEE
+    (0b01 << 22),              // PPC 2: toward +inf, IEEE
+    (0b10 << 22),              // PPC 3: toward -inf, IEEE
+    (0b00 << 22) | (1 << 24),  // PPC 4: nearest, flush-to-zero
+    (0b11 << 22) | (1 << 24),  // PPC 5: toward zero, flush-to-zero
+    (0b01 << 22) | (1 << 24),  // PPC 6: toward +inf, flush-to-zero
+    (0b10 << 22) | (1 << 24),  // PPC 7: toward -inf, flush-to-zero
+};
+// The NaN fixups rely on FPCR.DN (bit 25) and FPCR.AH (bit 1) being clear in
+// every FPCR the guest runs with. SET_NJM only toggles FZ.
+static_assert([] {
+  constexpr uint32_t kNaNControl = (1u << 25) | (1u << 1);
+  for (uint32_t fpcr : kGuestFpcrTable) {
+    if (fpcr & kNaNControl) {
+      return false;
+    }
+  }
+  return !(DEFAULT_FPU_FPCR & kNaNControl) && !(DEFAULT_VMX_FPCR & kNaNControl);
+}());
 
 class A64Backend : public Backend {
  public:

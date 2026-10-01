@@ -4771,22 +4771,6 @@ EMITTER_OPCODE_TABLE(OPCODE_DOT_PRODUCT_4, DOT_PRODUCT_4_V128);
 // ============================================================================
 // OPCODE_SET_ROUNDING_MODE
 // ============================================================================
-// PPC rounding mode (input bits 0-2) to ARM64 FPCR value table.
-// Bits 0-1: PPC RN (rounding mode), Bit 2: PPC NI (non-IEEE / flush-to-zero).
-//   PPC RN=0 (nearest) -> ARM64 RMode=00, PPC RN=1 (toward zero) -> RMode=11,
-//   PPC RN=2 (toward +inf) -> RMode=01, PPC RN=3 (toward -inf) -> RMode=10.
-// ARM64 FPCR RMode is bits 23:22, FZ is bit 24.
-// Index 0-3: NI=0 (IEEE), Index 4-7: NI=1 (non-IEEE, FZ set).
-static constexpr uint32_t fpcr_table[8] = {
-    (0b00 << 22),              // PPC 0: nearest, IEEE
-    (0b11 << 22),              // PPC 1: toward zero, IEEE
-    (0b01 << 22),              // PPC 2: toward +inf, IEEE
-    (0b10 << 22),              // PPC 3: toward -inf, IEEE
-    (0b00 << 22) | (1 << 24),  // PPC 4: nearest, flush-to-zero
-    (0b11 << 22) | (1 << 24),  // PPC 5: toward zero, flush-to-zero
-    (0b01 << 22) | (1 << 24),  // PPC 6: toward +inf, flush-to-zero
-    (0b10 << 22) | (1 << 24),  // PPC 7: toward -inf, flush-to-zero
-};
 struct SET_ROUNDING_MODE
     : Sequence<SET_ROUNDING_MODE, I<OPCODE_SET_ROUNDING_MODE, VoidOp, I32Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
@@ -4795,7 +4779,7 @@ struct SET_ROUNDING_MODE
     auto bctx = e.GetBackendCtxReg();
 
     if (i.src1.is_constant) {
-      uint32_t fpcr_val = fpcr_table[i.src1.constant() & 7];
+      uint32_t fpcr_val = kGuestFpcrTable[i.src1.constant() & 7];
       e.mov(e.x0, static_cast<uint64_t>(fpcr_val));
       e.msr(3, 3, 4, 4, 0, e.x0);  // msr FPCR, x0
       // Cache in backend context.
@@ -4817,7 +4801,7 @@ struct SET_ROUNDING_MODE
           ptr(bctx, static_cast<uint32_t>(offsetof(A64BackendContext, flags))));
     } else {
       // Dynamic: look up FPCR value from table.
-      e.mov(e.x0, reinterpret_cast<uint64_t>(fpcr_table));
+      e.mov(e.x0, reinterpret_cast<uint64_t>(kGuestFpcrTable));
       e.and_(e.w1, i.src1, 7);
       e.ldr(e.w0, Xbyak_aarch64::ptr(e.x0, e.x1, Xbyak_aarch64::LSL, 2));
       // Write FPCR.

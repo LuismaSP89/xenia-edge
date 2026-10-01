@@ -1746,23 +1746,10 @@ std::string A64Backend::FormatSequenceKey(uint64_t key) const {
   return a64::FormatSequenceKey(key);
 }
 
-// PPC rounding mode (3-bit) to ARM64 FPCR value.
-// Same table as in a64_sequences.cc SET_ROUNDING_MODE.
-static constexpr uint32_t fpcr_table[8] = {
-    (0b00 << 22),              // PPC 0: nearest, IEEE
-    (0b11 << 22),              // PPC 1: toward zero, IEEE
-    (0b01 << 22),              // PPC 2: toward +inf, IEEE
-    (0b10 << 22),              // PPC 3: toward -inf, IEEE
-    (0b00 << 22) | (1 << 24),  // PPC 4: nearest, flush-to-zero
-    (0b11 << 22) | (1 << 24),  // PPC 5: toward zero, flush-to-zero
-    (0b01 << 22) | (1 << 24),  // PPC 6: toward +inf, flush-to-zero
-    (0b10 << 22) | (1 << 24),  // PPC 7: toward -inf, flush-to-zero
-};
-
 void A64Backend::SetGuestRoundingMode(void* ctx, unsigned int mode) {
   A64BackendContext* bctx = BackendContextForGuestContext(ctx);
   uint32_t control = mode & 7;
-  uint32_t fpcr_val = fpcr_table[control];
+  uint32_t fpcr_val = kGuestFpcrTable[control];
 #if XE_COMPILER_MSVC
   // MSVC ARM64 intrinsic: ARM64_FPCR = register ID 0x5A20.
   _WriteStatusReg(0x5A20, static_cast<uint64_t>(fpcr_val));
