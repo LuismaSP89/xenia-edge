@@ -13,6 +13,7 @@
 #include <cstring>
 
 #include "xenia/cpu/compiler/passes/control_flow_analysis_pass.h"
+#include "xenia/cpu/compiler/passes/control_flow_simplification_pass.h"
 #include "xenia/cpu/compiler/passes/simplification_pass.h"
 
 using namespace xe::cpu::hir;
@@ -58,6 +59,35 @@ bool SimplifiesAway(void (*emit)(HIRBuilder& b)) {
   b.Finalize();
   compiler::passes::ControlFlowAnalysisPass cfa;
   cfa.Run(&b);
+  compiler::passes::SimplificationPass pass;
+  bool changed = false;
+  pass.Run(&b, changed);
+  const bool folded = !HasDenormalQuirk(b);
+  b.RemoveCurrent();
+  return folded;
+}
+
+// Merges blocks first, as the translator does, which can leave a branch in the
+// middle of a block where the state differs from the block's end.
+bool SimplifiesAwayAfterMerging(void (*emit)(HIRBuilder& b),
+                                bool* mid_block_branch) {
+  HIRBuilder b;
+  b.MakeCurrent();
+  emit(b);
+  b.Finalize();
+  compiler::passes::ControlFlowAnalysisPass cfa;
+  cfa.Run(&b);
+  compiler::passes::ControlFlowSimplificationPass cfs;
+  cfs.Run(&b);
+  cfa.Run(&b);
+  *mid_block_branch = false;
+  for (Block* block = b.first_block(); block; block = block->next) {
+    for (Instr* i = block->instr_head; i; i = i->next) {
+      if (i->BranchLabel() && i != block->instr_tail) {
+        *mid_block_branch = true;
+      }
+    }
+  }
   compiler::passes::SimplificationPass pass;
   bool changed = false;
   pass.Run(&b, changed);
@@ -187,6 +217,21 @@ TEST_CASE("DENORMAL_QUIRK_FOLD_ACROSS_BLOCKS", "[instr]") {
     StoreGPR(b, 3, b.ZeroExtend(b.DenormalQuirk(f1, f1, f1), INT64_TYPE));
     b.Return();
   }));
+  // Nor when the branch leaves mid-block, before a later store proves it.
+  bool mid_block_branch = false;
+  REQUIRE_FALSE(SimplifiesAwayAfterMerging(
+      [](HIRBuilder& b) {
+        StoreFPR(b, 1, LoadFPR(b, 2));
+        auto label = b.NewLabel();
+        b.BranchTrue(b.Truncate(LoadGPR(b, 2), INT8_TYPE), label);
+        StoreFPR(b, 1, b.UnpackSingle(b.Truncate(LoadGPR(b, 1), INT32_TYPE)));
+        b.MarkLabel(label);
+        Value* f1 = LoadFPR(b, 1);
+        StoreGPR(b, 3, b.ZeroExtend(b.DenormalQuirk(f1, f1, f1), INT64_TYPE));
+        b.Return();
+      },
+      &mid_block_branch));
+  REQUIRE(mid_block_branch);
   // Nor around a loop whose body stores something unproven.
   REQUIRE_FALSE(SimplifiesAway([](HIRBuilder& b) {
     StoreFPR(b, 1, b.UnpackSingle(b.Truncate(LoadGPR(b, 1), INT32_TYPE)));

@@ -83,24 +83,30 @@ bool ClobbersGuestContext(const Instr* i) {
 }  // namespace
 
 bool SimplificationPass::PropagateGuestFPRDenormalProof(HIRBuilder* builder) {
-  uint16_t block_count = 0;
+  // Block::ordinal is 16 bits.
+  size_t block_count = 0;
   for (Block* b = builder->first_block(); b; b = b->next) {
-    b->ordinal = block_count++;
+    if (block_count > UINT16_MAX) {
+      return false;
+    }
+    b->ordinal = static_cast<uint16_t>(block_count++);
   }
   if (!block_count) {
     return false;
   }
 
   constexpr uint32_t kAllClean = ~uint32_t(0);
-  // The entry block inherits the caller's registers, which say nothing.
-  std::vector<uint32_t> out(block_count, kAllClean);
-  std::vector<uint32_t> in(block_count, 0);
-
-  // Walks a block from the clean set at its entry. With `tag`, also marks the
-  // FPR loads that the set proves clean.
+  // Walks a block from the clean set at its entry, handing the set at each
+  // branch to on_branch. With `tag`, also marks the FPR loads that the set
+  // proves clean.
   bool tagged = false;
-  const auto transfer = [&tagged](Block* block, uint32_t clean, bool tag) {
+  const auto transfer = [&tagged](Block* block, uint32_t clean, bool tag,
+                                  auto&& on_branch) {
     for (Instr* i = block->instr_head; i; i = i->next) {
+      if (const Label* target = i->BranchLabel()) {
+        on_branch(target->block, clean);
+        continue;
+      }
       if (ClobbersGuestContext(i)) {
         clean = 0;
         continue;
@@ -144,6 +150,41 @@ bool SimplificationPass::PropagateGuestFPRDenormalProof(HIRBuilder* builder) {
     return clean;
   };
 
+  // The edges in walk order, each a branch or a fall-through. Each carries the
+  // clean set at its own instruction, which a mid-block branch needs.
+  const auto falls_through = [](const Block* block) {
+    const Instr* last = block->instr_tail;
+    return block->next && !(last && (last->GetOpcodeNum() == OPCODE_BRANCH ||
+                                     last->GetOpcodeNum() == OPCODE_RETURN));
+  };
+  std::vector<size_t> first_edge(block_count);
+  std::vector<std::vector<size_t>> incoming(block_count);
+  size_t edge_count = 0;
+  for (Block* block = builder->first_block(); block; block = block->next) {
+    first_edge[block->ordinal] = edge_count;
+    for (Instr* i = block->instr_head; i; i = i->next) {
+      if (const Label* target = i->BranchLabel()) {
+        incoming[target->block->ordinal].push_back(edge_count++);
+      }
+    }
+    if (falls_through(block)) {
+      incoming[block->next->ordinal].push_back(edge_count++);
+    }
+  }
+  std::vector<uint32_t> edge_clean(edge_count, kAllClean);
+  // The entry block inherits the caller's registers, which say nothing, and a
+  // block no edge reaches is entered from somewhere the proof cannot see.
+  const auto entry_of = [&](const Block* block) {
+    if (block->ordinal == 0 || incoming[block->ordinal].empty()) {
+      return uint32_t(0);
+    }
+    uint32_t clean = kAllClean;
+    for (size_t e : incoming[block->ordinal]) {
+      clean &= edge_clean[e];
+    }
+    return clean;
+  };
+
   // Descend to the greatest fixed point, so a value that stays clean around a
   // loop keeps its proof. The optimistic start is only sound at the fixed
   // point, so tag nothing if it is not reached.
@@ -151,19 +192,17 @@ bool SimplificationPass::PropagateGuestFPRDenormalProof(HIRBuilder* builder) {
   for (size_t sweep = 0; sweep < 64 && !converged; ++sweep) {
     bool changed = false;
     for (Block* block = builder->first_block(); block; block = block->next) {
-      const uint16_t n = block->ordinal;
-      uint32_t entry = kAllClean;
-      for (Edge* e = block->incoming_edge_head; e; e = e->incoming_next) {
-        entry &= out[e->src->ordinal];
-      }
-      if (!block->incoming_edge_head || n == 0) {
-        entry = 0;
-      }
-      const uint32_t exit = transfer(block, entry, false);
-      if (entry != in[n] || exit != out[n]) {
-        in[n] = entry;
-        out[n] = exit;
-        changed = true;
+      size_t e = first_edge[block->ordinal];
+      const auto set_edge = [&](const Block*, uint32_t clean) {
+        if (edge_clean[e] != clean) {
+          edge_clean[e] = clean;
+          changed = true;
+        }
+        ++e;
+      };
+      const uint32_t exit = transfer(block, entry_of(block), false, set_edge);
+      if (falls_through(block)) {
+        set_edge(block->next, exit);
       }
     }
     converged = !changed;
@@ -173,7 +212,7 @@ bool SimplificationPass::PropagateGuestFPRDenormalProof(HIRBuilder* builder) {
   }
 
   for (Block* block = builder->first_block(); block; block = block->next) {
-    transfer(block, in[block->ordinal], true);
+    transfer(block, entry_of(block), true, [](const Block*, uint32_t) {});
   }
   return tagged;
 }
