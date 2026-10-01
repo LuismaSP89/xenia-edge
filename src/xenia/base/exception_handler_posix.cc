@@ -41,6 +41,9 @@ std::pair<ExceptionHandler::Handler, void*> handlers_[kMaxHandlerCount];
 
 static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
                                      void* signal_context) {
+  // The faulting thread may hold the guest's FP control. Returning from the
+  // signal restores the interrupted value from the signal context.
+  SetHostDefaultFpControl();
   if (signal_number == SIGTRAP && signal_info->si_code <= 0) {
     // raise()/kill(), not a trap instruction - xenia_assert uses this. Nothing
     // here can claim it, and the handlers below would swallow it.

@@ -247,6 +247,10 @@ class Exception {
       AccessViolationOperation::kUnknown;
 };
 
+// Puts the calling thread's FPCR or MXCSR in the host ABI default: round to
+// nearest, no flush-to-zero, exceptions masked.
+void SetHostDefaultFpControl();
+
 class ExceptionHandler {
  public:
   typedef bool (*Handler)(Exception* ex, void* data);
