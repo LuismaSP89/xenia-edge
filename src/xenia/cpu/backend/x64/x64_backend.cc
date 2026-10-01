@@ -787,6 +787,7 @@ GuestToHostThunk X64HelperEmitter::EmitGuestToHostThunk() {
   // Host callbacks may change MXCSR. Restore the guest scalar rounding mode
   // so later guest FP ops observe the correct PPC rounding state.
   vldmxcsr(GetBackendCtxPtr(offsetof(X64BackendContext, mxcsr_fpu)));
+  btr(GetBackendFlagsPtr(), kX64BackendMXCSRModeBit);
 
   code_offsets.epilog = getSize();
 
@@ -838,6 +839,7 @@ GuestToHostThunk X64HelperEmitter::EmitGuestToHostThunk() {
   // Host callbacks may change MXCSR. Restore the guest scalar rounding mode
   // so later guest FP ops observe the correct PPC rounding state.
   vldmxcsr(GetBackendCtxPtr(offsetof(X64BackendContext, mxcsr_fpu)));
+  btr(GetBackendFlagsPtr(), kX64BackendMXCSRModeBit);
 
   code_offsets.epilog = getSize();
 
