@@ -164,14 +164,50 @@ wxString FormatLastPlayed(time_t timestamp) {
   return wxString::FromUTF8(fmt::format("{:%Y-%m-%d %H:%M}", tm));
 }
 
+// Whether the package at `path` is a title update for a different release
+// than `release_version`. Releases of one title share its content folder, so
+// a base game and the stand-alone disc of its expansion see each other's
+// updates there, and only one of them can patch a given executable. The
+// package header names the release an update patches by the same version the
+// library keys releases on, which is what tells them apart (its media id
+// cannot: a multi-disc release has one per disc). Packages seen so far put
+// that version in both version fields; one that fills them differently is
+// kept as long as either names this release. An extracted package has no
+// such header and a zero version is unknown; both stay listed rather than
+// vanish on missing information.
+bool IsUpdateForOtherRelease(const std::filesystem::path& path,
+                             uint32_t release_version) {
+  if (!release_version) {
+    return false;
+  }
+  std::error_code ec;
+  if (std::filesystem::is_directory(path, ec)) {
+    return false;
+  }
+  const auto header = vfs::XContentContainerDevice::ReadContainerHeader(path);
+  if (!header || !header->content_header.is_magic_valid()) {
+    return false;
+  }
+  const auto& info = header->content_metadata.execution_info;
+  const uint32_t version = info.version_value;
+  const uint32_t base_version = info.base_version_value;
+  if (!version && !base_version) {
+    return false;
+  }
+  return version != release_version && base_version != release_version;
+}
+
 // Installed content of one type. The content manager resolves the friendly
 // name out of each package header; without a kernel we can only show the file
-// names on disk.
+// names on disk. Title updates built for another release of the title are
+// left out when `release_version` says which one this is.
 std::vector<ContentItem> ListContentItems(kernel::xam::ContentManager* manager,
                                           const std::filesystem::path& root,
                                           uint64_t xuid, uint32_t title_id,
                                           XContentType content_type,
-                                          std::string_view file_name_prefix) {
+                                          std::string_view file_name_prefix,
+                                          uint32_t release_version) {
+  const bool filter_updates = content_type == XContentType::kInstaller;
   std::vector<ContentItem> items;
   if (manager) {
     for (const auto& data :
@@ -179,12 +215,16 @@ std::vector<ContentItem> ListContentItems(kernel::xam::ContentManager* manager,
       if (!xe::utf8::starts_with_case(data.file_name(), file_name_prefix)) {
         continue;
       }
+      const auto path = root / xe::to_path(data.file_name());
+      if (filter_updates && IsUpdateForOtherRelease(path, release_version)) {
+        continue;
+      }
       const auto display_name = xe::to_utf8(data.display_name());
       ContentItem item;
       item.name = wxString::FromUTF8(display_name.empty() ? data.file_name()
                                                           : display_name);
-      item.path = root / xe::to_path(data.file_name());
-      item.size_bytes = PathSize(item.path);
+      item.path = path;
+      item.size_bytes = PathSize(path);
       items.push_back(std::move(item));
     }
     return items;
@@ -192,6 +232,10 @@ std::vector<ContentItem> ListContentItems(kernel::xam::ContentManager* manager,
   for (const auto& info : xe::filesystem::ListFiles(root)) {
     if (!xe::utf8::starts_with_case(xe::path_to_utf8(info.name),
                                     file_name_prefix)) {
+      continue;
+    }
+    if (filter_updates &&
+        IsUpdateForOtherRelease(info.path / info.name, release_version)) {
       continue;
     }
     ContentItem item;
@@ -705,7 +749,7 @@ void GameInfoPanel::BuildContentSection(wxWindow* parent, wxBoxSizer* sizer,
           location.xuid, title_of(location), location.content_type);
       auto found = ListContentItems(content_manager(), path, location.xuid,
                                     title_of(location), location.content_type,
-                                    location.file_name_prefix);
+                                    location.file_name_prefix, key_.version);
       // The folder opened is the first that holds any of them, or the one
       // package a name filter leaves when it's a folder.
       if (root.empty() && !found.empty()) {
