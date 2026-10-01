@@ -191,8 +191,9 @@ HostToGuestThunk A64HelperEmitter::EmitHostToGuestThunk() {
   // x21 = virtual_membase (loaded from context)
   ldr(x21, ptr(x20, static_cast<int32_t>(
                         offsetof(ppc::PPCContext, virtual_membase))));
-  // Restore the guest scalar FPCR on every host->guest entry so host-side
-  // work done before the call can't leak a stale rounding / non-IEEE mode.
+  // Keep the host FPCR for the return, and enter in the guest's scalar mode.
+  mrs(x12, 3, 3, 4, 4, 0);  // mrs x12, FPCR
+  str(x12, ptr(sp, static_cast<uint32_t>(StackLayout::THUNK_HOST_FPCR)));
   EmitRestoreFpuFpcr();
   // x0 still holds target, x2 holds return address.
   // The guest function's prolog stores x0 to GUEST_RET_ADDR on its stack
@@ -204,6 +205,15 @@ HostToGuestThunk A64HelperEmitter::EmitHostToGuestThunk() {
 
   // Call the guest function.
   blr(x9);
+
+  // Host code after the guest returns runs in the host's FPCR, not the guest's.
+  Xbyak_aarch64::Label host_fpcr_restored;
+  ldr(x11, ptr(sp, static_cast<uint32_t>(StackLayout::THUNK_HOST_FPCR)));
+  mrs(x12, 3, 3, 4, 4, 0);  // mrs x12, FPCR
+  cmp(x11, x12);
+  b(Xbyak_aarch64::EQ, host_fpcr_restored);
+  msr(3, 3, 4, 4, 0, x11);
+  L(host_fpcr_restored);
 
   code_offsets.epilog = getSize();
 

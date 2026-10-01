@@ -86,6 +86,9 @@ class X64HelperEmitter : public X64Emitter {
   void EmitLoadVolatileRegs();
   void EmitSaveNonvolatileRegs();
   void EmitLoadNonvolatileRegs();
+  // Saves the host MXCSR for the return and enters the guest's scalar mode.
+  // rsi must hold the context.
+  void EmitEnterGuestMxcsr();
 };
 
 #if XE_PLATFORM_WIN32
@@ -682,9 +685,11 @@ HostToGuestThunk X64HelperEmitter::EmitHostToGuestThunk() {
   mov(rax, rcx);
   mov(rsi, rdx);                                                    // context
   mov(rdi, ptr[rdx + offsetof(ppc::PPCContext, virtual_membase)]);  // membase
+  EmitEnterGuestMxcsr();
   mov(rcx, r8);  // return address
   call(rax);
   vzeroupper();
+  vldmxcsr(dword[rsp + offsetof(StackLayout::Thunk, host_mxcsr)]);
   EmitLoadNonvolatileRegs();
 
   code_offsets.epilog = getSize();
@@ -725,8 +730,10 @@ HostToGuestThunk X64HelperEmitter::EmitHostToGuestThunk() {
   // need it preserved)
   mov(qword[rsp + offsetof(StackLayout::Thunk, xmm[0])], rsi);
   mov(rdi, ptr[rsi + offsetof(ppc::PPCContext, virtual_membase)]);  // membase
+  EmitEnterGuestMxcsr();
   mov(rcx, rdx);  // return address
   call(rax);
+  vldmxcsr(dword[rsp + offsetof(StackLayout::Thunk, host_mxcsr)]);
   // Restore context register
   mov(rsi, qword[rsp + offsetof(StackLayout::Thunk, xmm[0])]);
 
@@ -1774,6 +1781,12 @@ void X64HelperEmitter::EmitLoadVolatileRegs() {
     vmovups(xmm15, qword[rsp + offsetof(StackLayout::Thunk, xmm[15])]);
   }
 #endif
+}
+
+void X64HelperEmitter::EmitEnterGuestMxcsr() {
+  vstmxcsr(dword[rsp + offsetof(StackLayout::Thunk, host_mxcsr)]);
+  vldmxcsr(GetBackendCtxPtr(offsetof(X64BackendContext, mxcsr_fpu)));
+  btr(GetBackendFlagsPtr(), kX64BackendMXCSRModeBit);
 }
 
 void X64HelperEmitter::EmitSaveNonvolatileRegs() {

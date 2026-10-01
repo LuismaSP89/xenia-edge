@@ -9,6 +9,7 @@
 
 #include "xenia/cpu/testing/util.h"
 
+#include <cmath>
 #include <cstring>
 
 using namespace xe;
@@ -129,6 +130,109 @@ TEST_CASE("VMX_MODE_RELOADED_AFTER_LOAD_CLOCK", "[backend]") {
         REQUIRE(ctx->v[3] == vec128f(3.0f));
         RequireFlushed(ctx->v[8]);
       });
+}
+
+// =============================================================================
+// FP mode across a guest callback from host code
+// =============================================================================
+// Guest code calls into the host, which calls back into guest code, as the
+// kernel does for APCs and callbacks. Each side must run in its own FP mode:
+// the callback in the guest's, the host code after it in the host's.
+
+namespace {
+
+constexpr uint32_t kOuterAddr = 0x80000000;
+constexpr uint32_t kCallbackAddr = 0x80001000;
+
+float host_sum_after_callback = 0.0f;
+float host_denormal_product_after_callback = 0.0f;
+
+void CallBackIntoGuest(PPCContext* ctx, void* arg0, void* arg1) {
+  ctx->processor->Execute(ctx->thread_state, kCallbackAddr);
+  volatile float tiny = std::ldexp(1.0f, -24);
+  volatile float denormal = std::ldexp(1.0f, -140);
+  host_sum_after_callback = 1.0f + tiny;
+  host_denormal_product_after_callback = denormal * 2.0f;
+}
+
+// 1 + 2^-24 in single precision, which rounds up under toward-+inf.
+Value* RoundingProbe(HIRBuilder& b, int a, int c) {
+  return b.Convert(b.Add(b.Convert(LoadFPR(b, a), FLOAT32_TYPE),
+                         b.Convert(LoadFPR(b, c), FLOAT32_TYPE)),
+                   FLOAT64_TYPE);
+}
+
+// With vmx_last, the guest's last FP op before each switch is a vector one,
+// so a mode the host leaves behind looks like a VMX mode already in place.
+void RunGuestCallbackFpMode(bool vmx_last) {
+  Function* builtin = nullptr;
+  MultiFunctionTest test(
+      [](uint32_t address) {
+        return address == kOuterAddr || address == kCallbackAddr;
+      },
+      [&builtin, vmx_last](HIRBuilder& b, int invocation) {
+        if (invocation == 0) {
+          // The callback.
+          if (vmx_last) {
+            StoreVR(b, 9, b.Add(LoadVR(b, 10), LoadVR(b, 11)));
+            StoreFPR(b, 8, RoundingProbe(b, 6, 7));
+          } else {
+            StoreFPR(b, 8, RoundingProbe(b, 6, 7));
+            StoreVR(b, 9, b.Add(LoadVR(b, 10), LoadVR(b, 11)));
+          }
+        } else {
+          // Toward +inf with NI, which is FZ on arm64.
+          b.SetRoundingMode(b.LoadConstantInt32(6));
+          if (vmx_last) {
+            StoreFPR(b, 12, RoundingProbe(b, 4, 5));
+            StoreVR(b, 3, b.Add(LoadVR(b, 10), LoadVR(b, 11)));
+          } else {
+            StoreVR(b, 3, b.Add(LoadVR(b, 10), LoadVR(b, 11)));
+            StoreFPR(b, 12, RoundingProbe(b, 4, 5));
+          }
+          b.CallExtern(builtin);
+          StoreFPR(b, 3, RoundingProbe(b, 4, 5));
+        }
+        b.Return();
+      });
+  builtin = test.processor->DefineBuiltin("CallBackIntoGuest",
+                                          CallBackIntoGuest, nullptr, nullptr);
+  REQUIRE(test.processor->ResolveFunction(kCallbackAddr) != nullptr);
+  auto outer = test.processor->ResolveFunction(kOuterAddr);
+  REQUIRE(outer != nullptr);
+
+  auto ctx = test.ctx();
+  test.processor->backend()->SetGuestRoundingMode(ctx, 0);
+  ctx->f[4] = ctx->f[6] = 1.0;
+  ctx->f[5] = ctx->f[7] = std::ldexp(1.0, -24);
+  ctx->v[10] = kDenormal;
+  ctx->v[11] = vec128f(0.0f);
+  host_sum_after_callback = 0.0f;
+  host_denormal_product_after_callback = 0.0f;
+  test.Call(outer);
+
+  const double rounded_up = std::nextafterf(1.0f, 2.0f);
+  // The callback ran in the guest's mode, whatever the host left behind.
+  REQUIRE(ctx->f[8] == rounded_up);
+  RequireFlushed(ctx->v[9]);
+  // The host code after it ran in the host's. A literal, so the expectation
+  // does not depend on the FP mode this code runs in.
+  REQUIRE(host_sum_after_callback == 1.0f);
+  REQUIRE(host_denormal_product_after_callback == 0x1p-139f);
+  // And the guest that made the host call is back in its own.
+  REQUIRE(ctx->f[3] == rounded_up);
+
+  test.processor->backend()->SetGuestRoundingMode(ctx, 0);
+}
+
+}  // namespace
+
+TEST_CASE("GUEST_CALLBACK_FP_MODE_SCALAR_LAST", "[backend]") {
+  RunGuestCallbackFpMode(false);
+}
+
+TEST_CASE("GUEST_CALLBACK_FP_MODE_VMX_LAST", "[backend]") {
+  RunGuestCallbackFpMode(true);
 }
 
 // =============================================================================

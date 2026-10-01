@@ -773,9 +773,10 @@ TEST_CASE("FPCR_PRESERVED_ACROSS_HOST_CALLBACK", "[backend]") {
   // Toward-+inf: 1.0 + 2^-24 rounds up.
   float expected = std::nextafterf(1.0f, 2.0f);
   REQUIRE(result == expected);
-  // The host code rounded to nearest and kept the denormal.
+  // The host code rounded to nearest and kept the denormal. A literal, so the
+  // expectation does not depend on the FP mode this code runs in.
   REQUIRE(host_sum == 1.0f);
-  REQUIRE(host_denormal_product == std::ldexp(1.0f, -139));
+  REQUIRE(host_denormal_product == 0x1p-139f);
 
   // Reset rounding mode.
   processor->backend()->SetGuestRoundingMode(ctx, 0);
