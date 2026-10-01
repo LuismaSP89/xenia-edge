@@ -106,6 +106,9 @@ bool A64Emitter::Emit(GuestFunction* function, hir::HIRBuilder* builder,
   tail_code_.clear();
   label_bind_offsets_.clear();
   fpcr_mode_ = FPCRMode::Fpu;
+  remap_kept_label_ids_.clear();
+  remap_kept_branch_after_call_ = false;
+  emitting_tail_ = false;
 
   // The prolog, epilog and helpers emit outside the per-opcode guard below, so
   // an unencodable operand needs catching here too.
@@ -395,10 +398,12 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, EmitFunctionInfo& func_info) {
   // ========================================================================
   // TAIL CODE
   // ========================================================================
+  emitting_tail_ = true;
   for (auto& tail_item : tail_code_) {
     // ARM64 instructions are always 4-byte aligned, so alignment is mostly
     // a no-op unless we want cache-line alignment for hot paths.
     L(tail_item.label);
+    tail_item_called_ = false;
     // Tail code runs in whatever mode its branch site held, not the mode the
     // last block ended in.
     fpcr_mode_ = UntrackedFpcrMode();
@@ -412,6 +417,14 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, EmitFunctionInfo& func_info) {
     if (!MaybeFlushV128ConstPool()) {
       return false;
     }
+  }
+  emitting_tail_ = false;
+  if (remap_kept_branch_after_call_) {
+    XELOGE(
+        "A64: tail code in guest function {:08X} made a call and then "
+        "returned through a label that kept the physical remap bound",
+        current_guest_function_);
+    return false;
   }
   code_offsets.tail = getSize();
 
@@ -467,6 +480,9 @@ void A64Emitter::ResetPerFunctionState() {
   // reset() restarts xbyak label ids from 1, so recorded bind offsets from
   // this function must not leak into the next one.
   label_bind_offsets_.clear();
+  remap_kept_label_ids_.clear();
+  remap_kept_branch_after_call_ = false;
+  emitting_tail_ = false;
 
   // Clean up cached labels.
   epilog_label_ = nullptr;
@@ -574,6 +590,7 @@ void A64Emitter::Trap(uint16_t trap_type) {
 
 void A64Emitter::b(const Xbyak_aarch64::Cond cond,
                    const Xbyak_aarch64::Label& label) {
+  CheckRemapKeptBranch(label);
   if (near_tail_branches_safe_ ||
       IsBoundLabelInRange(label, kCondBranchBackwardRange)) {
     CodeGenerator::b(cond, label);
@@ -587,6 +604,7 @@ void A64Emitter::b(const Xbyak_aarch64::Cond cond,
 
 void A64Emitter::cbz(const Xbyak_aarch64::WReg& rt,
                      const Xbyak_aarch64::Label& label) {
+  CheckRemapKeptBranch(label);
   if (near_tail_branches_safe_ ||
       IsBoundLabelInRange(label, kCondBranchBackwardRange)) {
     CodeGenerator::cbz(rt, label);
@@ -600,6 +618,7 @@ void A64Emitter::cbz(const Xbyak_aarch64::WReg& rt,
 
 void A64Emitter::cbz(const Xbyak_aarch64::XReg& rt,
                      const Xbyak_aarch64::Label& label) {
+  CheckRemapKeptBranch(label);
   if (near_tail_branches_safe_ ||
       IsBoundLabelInRange(label, kCondBranchBackwardRange)) {
     CodeGenerator::cbz(rt, label);
@@ -613,6 +632,7 @@ void A64Emitter::cbz(const Xbyak_aarch64::XReg& rt,
 
 void A64Emitter::cbnz(const Xbyak_aarch64::WReg& rt,
                       const Xbyak_aarch64::Label& label) {
+  CheckRemapKeptBranch(label);
   if (near_tail_branches_safe_ ||
       IsBoundLabelInRange(label, kCondBranchBackwardRange)) {
     CodeGenerator::cbnz(rt, label);
@@ -626,6 +646,7 @@ void A64Emitter::cbnz(const Xbyak_aarch64::WReg& rt,
 
 void A64Emitter::cbnz(const Xbyak_aarch64::XReg& rt,
                       const Xbyak_aarch64::Label& label) {
+  CheckRemapKeptBranch(label);
   if (near_tail_branches_safe_ ||
       IsBoundLabelInRange(label, kCondBranchBackwardRange)) {
     CodeGenerator::cbnz(rt, label);
@@ -639,6 +660,7 @@ void A64Emitter::cbnz(const Xbyak_aarch64::XReg& rt,
 
 void A64Emitter::tbz(const Xbyak_aarch64::WReg& rt, uint32_t imm,
                      const Xbyak_aarch64::Label& label) {
+  CheckRemapKeptBranch(label);
   if (near_tbz_branches_safe_ ||
       IsBoundLabelInRange(label, kTestBranchBackwardRange)) {
     CodeGenerator::tbz(rt, imm, label);
@@ -652,6 +674,7 @@ void A64Emitter::tbz(const Xbyak_aarch64::WReg& rt, uint32_t imm,
 
 void A64Emitter::tbz(const Xbyak_aarch64::XReg& rt, uint32_t imm,
                      const Xbyak_aarch64::Label& label) {
+  CheckRemapKeptBranch(label);
   if (near_tbz_branches_safe_ ||
       IsBoundLabelInRange(label, kTestBranchBackwardRange)) {
     CodeGenerator::tbz(rt, imm, label);
@@ -665,6 +688,7 @@ void A64Emitter::tbz(const Xbyak_aarch64::XReg& rt, uint32_t imm,
 
 void A64Emitter::tbnz(const Xbyak_aarch64::WReg& rt, uint32_t imm,
                       const Xbyak_aarch64::Label& label) {
+  CheckRemapKeptBranch(label);
   if (near_tbz_branches_safe_ ||
       IsBoundLabelInRange(label, kTestBranchBackwardRange)) {
     CodeGenerator::tbnz(rt, imm, label);
@@ -678,6 +702,7 @@ void A64Emitter::tbnz(const Xbyak_aarch64::WReg& rt, uint32_t imm,
 
 void A64Emitter::tbnz(const Xbyak_aarch64::XReg& rt, uint32_t imm,
                       const Xbyak_aarch64::Label& label) {
+  CheckRemapKeptBranch(label);
   if (near_tbz_branches_safe_ ||
       IsBoundLabelInRange(label, kTestBranchBackwardRange)) {
     CodeGenerator::tbnz(rt, imm, label);
@@ -744,6 +769,7 @@ void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
   assert_not_null(function);
   EnsureFpuFpcrModeForTransition();
   DropPhysicalRemapBound();
+  NoteCallClobbersRemapBound();
   if (TryInlinePPCGprLrSaveRestore(instr, function)) {
     return;
   }
@@ -889,6 +915,7 @@ bool A64Emitter::TryInlinePPCGprLrSaveRestore(const hir::Instr* instr,
 void A64Emitter::CallIndirect(const hir::Instr* instr, int reg_index) {
   EnsureFpuFpcrModeForTransition();
   DropPhysicalRemapBound();
+  NoteCallClobbersRemapBound();
   auto target_w = WReg(reg_index);
 
   // Check if this is a possible return (e.g., PPC blr).
@@ -965,9 +992,40 @@ void A64Emitter::CallIndirect(const hir::Instr* instr, int reg_index) {
   }
 }
 
+// Whether a float or vector value defined before `call` is read after it.
+// Registers hold values only within a block, so only this block can.
+static bool FpValueLiveAcross(const hir::Instr* call) {
+  const auto is_fp = [](const hir::Value* v) {
+    return v->type == hir::FLOAT32_TYPE || v->type == hir::FLOAT64_TYPE ||
+           v->type == hir::VEC128_TYPE;
+  };
+  std::unordered_set<const hir::Value*> before;
+  for (const hir::Instr* i = call->block->instr_head; i != call; i = i->next) {
+    if (i->dest && is_fp(i->dest)) {
+      before.insert(i->dest);
+    }
+  }
+  if (before.empty()) {
+    return false;
+  }
+  bool live = false;
+  for (hir::Instr* i = call->next; i && !live; i = i->next) {
+    i->VisitValueOperands(
+        [&](hir::Value* v, uint32_t) { live |= before.count(v) != 0; });
+  }
+  return live;
+}
+
 void A64Emitter::CallExtern(const hir::Instr* instr, const Function* function) {
   EnsureFpuFpcrModeForTransition();
   DropPhysicalRemapBound();
+  NoteCallClobbersRemapBound();
+  // The no-vec thunk skips the q4-q31 save, which is right as long as no
+  // value lives in a vector register across the call.
+  const uint32_t thunk_offset = static_cast<uint32_t>(
+      FpValueLiveAcross(instr)
+          ? offsetof(A64BackendContext, guest_to_host_thunk_address)
+          : offsetof(A64BackendContext, guest_to_host_thunk_no_vec_address));
   bool undefined = true;
   if (function->behavior() == Function::Behavior::kBuiltin) {
     auto builtin_function = static_cast<const BuiltinFunction*>(function);
@@ -978,10 +1036,7 @@ void A64Emitter::CallExtern(const hir::Instr* instr, const Function* function) {
       mov(x0, reinterpret_cast<uint64_t>(builtin_function->handler()));
       mov(x1, reinterpret_cast<uint64_t>(builtin_function->arg0()));
       mov(x2, reinterpret_cast<uint64_t>(builtin_function->arg1()));
-      // No q4-q31 save: no HIR value is live in a vector register across a
-      // call (see EmitGuestToHostThunkNoVec).
-      ldr(x9, BackendCtxPtr(offsetof(A64BackendContext,
-                                     guest_to_host_thunk_no_vec_address)));
+      ldr(x9, BackendCtxPtr(thunk_offset));
       blr(x9);
     }
   } else if (function->behavior() == Function::Behavior::kExtern) {
@@ -992,8 +1047,7 @@ void A64Emitter::CallExtern(const hir::Instr* instr, const Function* function) {
       mov(x0, reinterpret_cast<uint64_t>(extern_function->extern_handler()));
       ldr(x1, ptr(GetContextReg(), static_cast<int32_t>(offsetof(
                                        ppc::PPCContext, kernel_state))));
-      ldr(x9, BackendCtxPtr(offsetof(A64BackendContext,
-                                     guest_to_host_thunk_no_vec_address)));
+      ldr(x9, BackendCtxPtr(thunk_offset));
       blr(x9);
     }
   }
@@ -1039,6 +1093,7 @@ void A64Emitter::CallNative(void* fn) { CallNativeSafe(fn); }
 
 void A64Emitter::CallNativeSafe(void* fn) {
   DropPhysicalRemapBound();
+  NoteCallClobbersRemapBound();
   // Sequences may emit this on a conditional path, so the mode after it is the
   // meet of the call path (Fpu) and the mode on entry.
   const FPCRMode entry_mode = fpcr_mode_;
@@ -1162,6 +1217,7 @@ void A64Emitter::EmitPreemptCheck(uint32_t guest_address) {
         e.ldr(e.x9, e.BackendCtxPtr(offsetof(A64BackendContext,
                                              guest_to_host_thunk_address)));
         e.blr(e.x9);
+        e.NoteCallClobbersRemapBound();
         if (held_mode != FPCRMode::Unknown && held_mode != FPCRMode::Fpu) {
           e.ReloadFpcrMode(held_mode);
         }

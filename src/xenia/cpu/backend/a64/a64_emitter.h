@@ -12,6 +12,7 @@
 
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "xenia/base/arena.h"
@@ -228,6 +229,10 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   using Xbyak_aarch64::CodeGenerator::cbz;
   using Xbyak_aarch64::CodeGenerator::tbnz;
   using Xbyak_aarch64::CodeGenerator::tbz;
+  void b(const Xbyak_aarch64::Label& label) {
+    CheckRemapKeptBranch(label);
+    CodeGenerator::b(label);
+  }
   void b(const Xbyak_aarch64::Cond cond, const Xbyak_aarch64::Label& label);
   void cbz(const Xbyak_aarch64::WReg& rt, const Xbyak_aarch64::Label& label);
   void cbz(const Xbyak_aarch64::XReg& rt, const Xbyak_aarch64::Label& label);
@@ -290,6 +295,16 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   void LKeepingRemapBound(Xbyak_aarch64::Label& label) {
     CodeGenerator::L(label);
     label_bind_offsets_.emplace(label.getId(), getSize());
+    remap_kept_label_ids_.insert(label.getId());
+  }
+  // A call clobbers w7, so tail code that made one must not return through a
+  // label that kept the bound. Emit fails the function if it does.
+  void NoteCallClobbersRemapBound() { tail_item_called_ = true; }
+  void CheckRemapKeptBranch(const Xbyak_aarch64::Label& label) {
+    if (emitting_tail_ && tail_item_called_ &&
+        remap_kept_label_ids_.count(label.getId())) {
+      remap_kept_branch_after_call_ = true;
+    }
   }
 
   // A producer that emits nothing hands the next sequence the register it
@@ -436,6 +451,11 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   // to be in range. Must be cleared whenever the code generator is reset
   // (xbyak reuses label ids after reset()).
   std::unordered_map<int, size_t> label_bind_offsets_;
+  // Labels bound with LKeepingRemapBound, keyed like label_bind_offsets_.
+  std::unordered_set<int> remap_kept_label_ids_;
+  bool emitting_tail_ = false;
+  bool tail_item_called_ = false;
+  bool remap_kept_branch_after_call_ = false;
 
   // True if `label` is bound at most `max_backward_bytes` behind the
   // current emission offset.

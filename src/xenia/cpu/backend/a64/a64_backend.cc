@@ -371,9 +371,9 @@ GuestToHostThunk A64HelperEmitter::EmitGuestToHostThunk() {
 // GuestToHostThunk without the q4-q31 save/restore, for CallExtern. No HIR
 // value is live in a vector register across a call: guest-to-guest calls are
 // a bare blr into a callee that uses q4-q31 freely, and ContextPromotionPass
-// stops at the first volatile instruction. A pass that hoists a value across
-// a call would break this. CallNativeSafe, which sequences emit with operands
-// in flight, keeps the full thunk.
+// stops at the first volatile instruction. CallExtern checks and takes the
+// full thunk where a value is live anyway. CallNativeSafe, which sequences
+// emit with operands in flight, always takes the full thunk.
 GuestToHostThunk A64HelperEmitter::EmitGuestToHostThunkNoVec() {
   struct {
     size_t prolog;
