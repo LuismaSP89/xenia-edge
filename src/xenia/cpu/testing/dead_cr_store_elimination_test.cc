@@ -56,8 +56,8 @@ size_t StoresLeft(void (*call)(HIRBuilder& b)) {
 }  // namespace
 
 TEST_CASE("DEAD_CR_STORE_ACROSS_CALL", "[compiler]") {
-  // A guest callee may destroy cr0, so the first store is dead.
-  REQUIRE(StoresLeft([](HIRBuilder& b) { b.Call(nullptr); }) == 1);
+  // A guest callee may read cr0, so neither store is dead.
+  REQUIRE(StoresLeft([](HIRBuilder& b) { b.Call(nullptr); }) == 2);
   // `sc` lowers to CALL_EXTERN, and the syscall handler saves the whole CR.
   REQUIRE(StoresLeft([](HIRBuilder& b) { b.CallExtern(nullptr); }) == 2);
 }
