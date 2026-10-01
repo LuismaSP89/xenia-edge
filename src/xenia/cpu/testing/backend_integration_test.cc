@@ -694,7 +694,7 @@ TEST_CASE("DOT_PRODUCT_4", "[backend]") {
 // Tests that the guest scalar rounding mode survives a host callback.
 // The GuestToHostThunk must restore fpcr_fpu after the host call returns,
 // otherwise the host C++ runtime's FPCR state leaks into subsequent guest ops.
-// On arm64 it must also enter host code with the host FPCR, not the guest's.
+// It must also enter host code with the host FPCR/MXCSR, not the guest's.
 
 static float host_sum = 0.0f;
 static float host_denormal_product = 0.0f;
@@ -773,12 +773,9 @@ TEST_CASE("FPCR_PRESERVED_ACROSS_HOST_CALLBACK", "[backend]") {
   // Toward-+inf: 1.0 + 2^-24 rounds up.
   float expected = std::nextafterf(1.0f, 2.0f);
   REQUIRE(result == expected);
-#if XE_ARCH_ARM64
-  // The host code rounded to nearest and kept the denormal. The x64
-  // guest-to-host thunk still enters host code with the guest MXCSR.
+  // The host code rounded to nearest and kept the denormal.
   REQUIRE(host_sum == 1.0f);
   REQUIRE(host_denormal_product == std::ldexp(1.0f, -139));
-#endif  // XE_ARCH_ARM64
 
   // Reset rounding mode.
   processor->backend()->SetGuestRoundingMode(ctx, 0);

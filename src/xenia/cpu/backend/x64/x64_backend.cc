@@ -757,6 +757,22 @@ HostToGuestThunk X64HelperEmitter::EmitHostToGuestThunk() {
 }
 
 GuestToHostThunk X64HelperEmitter::EmitGuestToHostThunk() {
+  // Host C code runs with the default MXCSR (round to nearest, no FTZ or DAZ),
+  // not the guest's scalar or VMX mode. No GPR is touched, so args survive.
+  auto enter_host_mxcsr = [this]() {
+    constexpr uint32_t kHostMxcsr = 0x1F80;
+    auto scratch =
+        GetBackendCtxPtr(offsetof(X64BackendContext, helper_scratch_u32s[0]));
+    scratch.setBit(32);
+    Xbyak::Label host_mxcsr_ready;
+    vstmxcsr(scratch);
+    cmp(scratch, kHostMxcsr);
+    je(host_mxcsr_ready);
+    mov(scratch, kHostMxcsr);
+    vldmxcsr(scratch);
+    L(host_mxcsr_ready);
+  };
+
 #if XE_PLATFORM_WIN32
   // rcx = target function
   // rdx = arg0
@@ -778,6 +794,7 @@ GuestToHostThunk X64HelperEmitter::EmitGuestToHostThunk() {
   vzeroupper();
   // Save off volatile registers.
   EmitSaveVolatileRegs();
+  enter_host_mxcsr();
 
   mov(rax, rcx);              // function
   mov(rcx, GetContextReg());  // context
@@ -827,6 +844,7 @@ GuestToHostThunk X64HelperEmitter::EmitGuestToHostThunk() {
 
   // Save off volatile registers.
   EmitSaveVolatileRegs();
+  enter_host_mxcsr();
 
   mov(rax, rcx);              // function
   mov(rdi, GetContextReg());  // context
