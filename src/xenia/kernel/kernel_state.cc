@@ -932,12 +932,8 @@ const xam::XCONTENT_AGGREGATE_DATA* KernelState::SelectTitleUpdate(
   // turn, and the UPDATE content released again so the caller can mount the
   // winner.
   uint8_t title_digest[0x14];
-  {
-    sha1::SHA1 s;
-    s.processBytes(
-        title_module->xex_module()->xex_security_info()->rsa_signature, 0x100);
-    s.finalize(title_digest);
-  }
+  mbedtls_sha1(title_module->xex_module()->xex_security_info()->rsa_signature,
+               0x100, title_digest);
 
   const xam::XCONTENT_AGGREGATE_DATA* best_update = nullptr;
   bool best_compatible = false;
